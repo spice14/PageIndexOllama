@@ -13,3 +13,5 @@ log/*
 logs/
 parts/*
 json_results/*
+
+archive
