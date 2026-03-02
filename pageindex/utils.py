@@ -1,5 +1,11 @@
-import tiktoken
+try:
+    import tiktoken
+    HAS_TIKTOKEN = True
+except ImportError:
+    HAS_TIKTOKEN = False
 import openai
+import requests
+import json as json_module
 import logging
 import os
 from datetime import datetime
@@ -17,95 +23,377 @@ import yaml
 from pathlib import Path
 from types import SimpleNamespace as config
 
-CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+# Initialize logger
+logger = logging.getLogger(__name__)
 
-def count_tokens(text, model=None):
+# Import credential management system
+from pageindex.credentials import (
+    get_api_key,
+    set_api_key,
+    get_ollama_model,
+    set_ollama_model,
+    CredentialValidator
+)
+
+# Import response handlers for provider-agnostic finish reason handling
+from pageindex.response_handlers import ResponseHandler, FinishReason
+
+# Initialize API key using credential manager
+# Maintains backward compatibility with CHATGPT_API_KEY constant
+CHATGPT_API_KEY = get_api_key("openai")
+
+# Initialize Ollama model from environment
+# Used for selecting which Ollama model to use (e.g., "phi3:3.8b", "mistral:7b", "llama3:8b")
+OLLAMA_MODEL = get_ollama_model()
+
+def get_effective_ollama_model(config_model: str = None) -> str:
+    """
+    Get the effective Ollama model to use.
+    Priority: OLLAMA_MODEL environment variable > config > default
+    
+    Args:
+        config_model: Model from config file (optional)
+    
+    Returns:
+        Effective model name to use
+    """
+    # First priority: environment variable
+    env_model = OLLAMA_MODEL
+    if env_model:
+        return env_model
+    
+    # Second priority: config file
+    if config_model:
+        return config_model
+    
+    # Fallback default (3B SLM)
+    return "phi3:3.8b"
+
+def get_model_for_provider(provider: str = "ollama", config=None) -> str:
+    """
+    Get the appropriate model for the specified provider.
+    
+    Args:
+        provider: Provider name ("openai" or "ollama")
+        config: Optional config object with model settings
+    
+    Returns:
+        Model name to use
+    """
+    if provider == "openai":
+        # Use OpenAI model from config
+        if config and hasattr(config, 'model'):
+            return config.model
+        return "gpt-4o-2024-11-20"
+    
+    elif provider == "ollama":
+        # Use Ollama model with priority: env > config > default
+        if config and hasattr(config, 'ollama_model'):
+            return get_effective_ollama_model(config.ollama_model)
+        return get_effective_ollama_model()
+    
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+def validate_model_config(model: str, provider: str) -> bool:
+    """
+    Validate that a model exists and is compatible with the provider.
+    
+    Args:
+        model: Model name
+        provider: Provider name
+    
+    Returns:
+        True if valid or unknown (permissive), False if explicit mismatch
+    """
+    try:
+        from pageindex.model_capabilities import get_model_capabilities
+        caps = get_model_capabilities(model)
+        
+        # If model is unknown (caps.provider == "unknown"), be permissive
+        if caps.provider == "unknown":
+            return True
+        
+        # Otherwise, validate that provider matches
+        return caps.provider == provider
+    except Exception as e:
+        logger.warning(f"Could not validate model {model}: {e}")
+        return True  # Allow unknown models to pass through
+
+def count_tokens(text, model=None, provider=None):
+    """
+    Count tokens in text using provider-appropriate tokenization.
+    
+    Args:
+        text: Text to count tokens for
+        model: Model name (optional)
+        provider: Provider name ("openai", "ollama", etc.) - auto-detected if None
+    
+    Returns:
+        Estimated token count
+    """
     if not text:
         return 0
-    enc = tiktoken.encoding_for_model(model)
-    tokens = enc.encode(text)
-    return len(tokens)
-
-def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
-    max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
-    for i in range(max_retries):
+    
+    # Auto-detect provider if not specified
+    if provider is None:
+        provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    
+    # Use OpenAI's tiktoken only for OpenAI provider
+    if provider == "openai" and HAS_TIKTOKEN and model:
         try:
-            if chat_history:
-                messages = chat_history
-                messages.append({"role": "user", "content": prompt})
-            else:
-                messages = [{"role": "user", "content": prompt}]
-            
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0,
-            )
-            if response.choices[0].finish_reason == "length":
-                return response.choices[0].message.content, "max_output_reached"
-            else:
-                return response.choices[0].message.content, "finished"
-
+            enc = tiktoken.encoding_for_model(model)
+            tokens = enc.encode(text)
+            return len(tokens)
         except Exception as e:
-            print('************* Retrying *************')
-            logging.error(f"Error: {e}")
-            if i < max_retries - 1:
-                time.sleep(1)  # Wait for 1秒 before retrying
-            else:
-                logging.error('Max retries reached for prompt: ' + prompt)
-                return "Error"
+            logger.warning(f"Failed to use tiktoken for model {model}: {e}")
+            # Fall through to universal fallback
+    
+    # Universal fallback for Ollama and other providers
+    # Most LLMs use roughly 1 token per 4 characters (conservative estimate)
+    return len(text) // 4
 
-
-
-def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
-    max_retries = 10
+def _call_openai_with_finish_reason(model, messages, api_key):
+    """Call OpenAI API and extract finish reason"""
     client = openai.OpenAI(api_key=api_key)
-    for i in range(max_retries):
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0,
+    )
+    
+    content = response.choices[0].message.content
+    raw_finish_reason = response.choices[0].finish_reason
+    
+    # Normalize finish reason
+    normalized = ResponseHandler.normalize_finish_reason("openai", raw_finish_reason)
+    finish_reason = normalized.value
+    
+    return content, finish_reason
+
+
+def _call_ollama_with_finish_reason(model, messages, ollama_url=None):
+    """Call Ollama API and extract finish reason"""
+    
+    if ollama_url is None:
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    
+    url = f"{ollama_url}/api/chat"
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.0,
+        }
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        
+        content = result.get('message', {}).get('content', '')
+        
+        # Ollama doesn't provide native finish_reason
+        # Infer from response structure (incomplete JSON/text indicators)
+        inferred_reason = _infer_ollama_finish_reason(content, model)
+        
+        return content, inferred_reason
+    
+    except requests.RequestException as e:
+        logger.error(f"Ollama API error: {e}")
+        raise
+
+
+def _infer_ollama_finish_reason(content, model):
+    """
+    Infer finish reason from Ollama response.
+    Detects if response appears incomplete based on structural indicators.
+    """
+    
+    if not content:
+        return "finished"
+    
+    # Check for incomplete JSON structure
+    incomplete_indicators = [
+        content.endswith(('{', '[', ',')),  # Ends with opening bracket or comma
+        content.count('{') > content.count('}'),  # Unmatched braces
+        content.count('[') > content.count(']'),  # Unmatched brackets
+    ]
+    
+    # Check for incomplete string literal (ends with backslash or quote imbalance)
+    quote_count = content.count('"') - content.count('\\"')
+    if quote_count % 2 != 0:
+        incomplete_indicators.append(True)
+    
+    if any(incomplete_indicators):
+        return "max_output_reached"
+    
+    return "finished"
+
+
+def ChatGPT_API_with_finish_reason(model, prompt, api_key=None, chat_history=None):
+    """
+    Provider-agnostic synchronous wrapper with finish reason detection.
+    Supports both OpenAI and Ollama backends.
+    
+    Returns:
+        Tuple[str, str]: (content, finish_reason)
+            - finish_reason: "finished", "max_output_reached", or "error"
+    """
+    
+    # Determine which provider to use
+    config_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    
+    # Build message list
+    if chat_history:
+        messages = list(chat_history) if isinstance(chat_history, list) else chat_history
+        messages.append({"role": "user", "content": prompt})
+    else:
+        messages = [{"role": "user", "content": prompt}]
+    
+    max_retries = 10
+    
+    for attempt in range(max_retries):
         try:
-            if chat_history:
-                messages = chat_history
-                messages.append({"role": "user", "content": prompt})
-            else:
-                messages = [{"role": "user", "content": prompt}]
+            if config_provider == "openai":
+                if api_key is None:
+                    api_key = get_api_key("openai") or os.getenv("CHATGPT_API_KEY")
+                content, finish_reason = _call_openai_with_finish_reason(model, messages, api_key)
+                return content, finish_reason
             
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0,
-            )
-   
-            return response.choices[0].message.content
-        except Exception as e:
-            print('************* Retrying *************')
-            logging.error(f"Error: {e}")
-            if i < max_retries - 1:
-                time.sleep(1)  # Wait for 1秒 before retrying
+            elif config_provider == "ollama":
+                ollama_url = os.getenv("OLLAMA_URL")
+                content, finish_reason = _call_ollama_with_finish_reason(model, messages, ollama_url)
+                return content, finish_reason
+            
             else:
-                logging.error('Max retries reached for prompt: ' + prompt)
-                return "Error"
+                # Default to Ollama if unknown provider
+                logger.warning(f"Unknown provider '{config_provider}', defaulting to Ollama")
+                content, finish_reason = _call_ollama_with_finish_reason(model, messages, None)
+                return content, finish_reason
+        
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                logger.error(f"Max retries ({max_retries}) reached for prompt")
+                return "Error", "error"
+
+
+
+def ChatGPT_API(model, prompt, api_key=None, chat_history=None):
+    """
+    Provider-agnostic standard synchronous wrapper.
+    Returns content only (no finish reason tracking).
+    Supports both OpenAI and Ollama backends.
+    
+    Returns:
+        str: Response content or "Error" on failure
+    """
+    
+    content, finish_reason = ChatGPT_API_with_finish_reason(
+        model=model,
+        prompt=prompt,
+        api_key=api_key,
+        chat_history=chat_history
+    )
+    
+    return content
             
 
-async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
-    max_retries = 10
+async def ChatGPT_API_async(model, prompt, api_key=None):
+    """
+    Provider-agnostic asynchronous wrapper.
+    Supports both OpenAI and Ollama backends with async/await.
+    
+    Returns:
+        str: Response content or "Error" on failure
+    """
+    
+    # Determine which provider to use
+    config_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    
     messages = [{"role": "user", "content": prompt}]
-    for i in range(max_retries):
-        try:
-            async with openai.AsyncOpenAI(api_key=api_key) as client:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0,
+    max_retries = 10
+    
+    if config_provider == "openai":
+        # Use OpenAI's native async client
+        if api_key is None:
+            api_key = get_api_key("openai") or os.getenv("CHATGPT_API_KEY")
+        
+        for attempt in range(max_retries):
+            try:
+                async with openai.AsyncOpenAI(api_key=api_key) as client:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0,
+                    )
+                    return response.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"OpenAI async attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(f"Max retries ({max_retries}) reached")
+                    return "Error"
+    
+    else:
+        # For Ollama, use sync call via executor (non-blocking)
+        # This allows async code to call Ollama without blocking the event loop
+        from concurrent.futures import ThreadPoolExecutor
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        for attempt in range(max_retries):
+            try:
+                # Run sync Ollama call in thread pool to avoid blocking
+                content = await loop.run_in_executor(
+                    executor,
+                    lambda: _call_ollama_sync(model, messages)
                 )
-                return response.choices[0].message.content
-        except Exception as e:
-            print('************* Retrying *************')
-            logging.error(f"Error: {e}")
-            if i < max_retries - 1:
-                await asyncio.sleep(1)  # Wait for 1s before retrying
-            else:
-                logging.error('Max retries reached for prompt: ' + prompt)
-                return "Error"  
+                return content
+            except Exception as e:
+                logger.warning(f"Ollama async attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(f"Max retries ({max_retries}) reached")
+                    return "Error"
+
+
+def _call_ollama_sync(model, messages, ollama_url=None):
+    """Synchronous Ollama call (used by async wrapper via executor)"""
+    
+    if ollama_url is None:
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    
+    url = f"{ollama_url}/api/chat"
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.0,
+        }
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        
+        content = result.get('message', {}).get('content', '')
+        return content
+    
+    except requests.RequestException as e:
+        logger.error(f"Ollama sync API error: {e}")
+        raise  
             
             
 def get_json_content(response):
@@ -411,14 +699,20 @@ def add_preface_if_needed(data):
 
 
 def get_page_tokens(pdf_path, model="gpt-4o-2024-11-20", pdf_parser="PyPDF2"):
-    enc = tiktoken.encoding_for_model(model)
+    if HAS_TIKTOKEN:
+        enc = tiktoken.encoding_for_model(model)
+        encode_fn = lambda text: len(enc.encode(text))
+    else:
+        # Fallback: simple estimation
+        encode_fn = lambda text: len(text) // 4
+    
     if pdf_parser == "PyPDF2":
         pdf_reader = PyPDF2.PdfReader(pdf_path)
         page_list = []
         for page_num in range(len(pdf_reader.pages)):
             page = pdf_reader.pages[page_num]
             page_text = page.extract_text()
-            token_length = len(enc.encode(page_text))
+            token_length = encode_fn(page_text)
             page_list.append((page_text, token_length))
         return page_list
     elif pdf_parser == "PyMuPDF":
@@ -430,7 +724,7 @@ def get_page_tokens(pdf_path, model="gpt-4o-2024-11-20", pdf_parser="PyPDF2"):
         page_list = []
         for page in doc:
             page_text = page.get_text()
-            token_length = len(enc.encode(page_text))
+            token_length = encode_fn(page_text)
             page_list.append((page_text, token_length))
         return page_list
     else:
