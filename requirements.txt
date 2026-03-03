@@ -1,6 +1,28 @@
+# ==============================================================================
+# PageIndex Dependencies - Ollama Migration
+# ==============================================================================
+
+# OpenAI SDK (optional - for fallback/compatibility)
+# Kept for backward compatibility and hybrid mode
 openai==1.101.0
+
+# Ollama Support
+# HTTP client for local Ollama API calls
+requests>=2.31.0
+
+# Async HTTP client for Ollama async operations
+aiohttp>=3.9.0
+
+# PDF Processing
 pymupdf==1.26.4
 PyPDF2==3.0.1
+
+# Configuration Management
 python-dotenv==1.1.0
-tiktoken==0.11.0
-pyyaml==6.0.2
+
+# Token Counting (for OpenAI-compatible tokenization)
+tiktoken>=0.5.0
+
+# YAML Configuration
+pyyaml>=6.0.0
+

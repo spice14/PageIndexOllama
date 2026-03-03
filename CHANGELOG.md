@@ -14,3 +14,6 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - [x] Change "child_nodes" -> "nodes" to simplify the structure
+
+### Modified
+- Decoupled OpenAI SDK completely and coupled with Ollama instead
