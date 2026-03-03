@@ -66,8 +66,8 @@ def get_effective_ollama_model(config_model: str = None) -> str:
     if config_model:
         return config_model
     
-    # Fallback default (3B SLM)
-    return "phi3:3.8b"
+    # Fallback default
+    return "mistral:7b"
 
 def get_model_for_provider(provider: str = "ollama", config=None) -> str:
     """
@@ -84,7 +84,7 @@ def get_model_for_provider(provider: str = "ollama", config=None) -> str:
         # Use OpenAI model from config
         if config and hasattr(config, 'model'):
             return config.model
-        return "gpt-4o-2024-11-20"
+        return "mistral:7b"
     
     elif provider == "ollama":
         # Use Ollama model with priority: env > config > default
@@ -172,11 +172,26 @@ def _call_openai_with_finish_reason(model, messages, api_key):
     return content, finish_reason
 
 
+def _validate_ollama_endpoint(ollama_url):
+    """Validate Ollama endpoint is reachable"""
+    try:
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Ollama endpoint {ollama_url} not reachable: {e}")
+        return False
+
+
 def _call_ollama_with_finish_reason(model, messages, ollama_url=None):
-    """Call Ollama API and extract finish reason"""
+    """Call Ollama API and extract finish reason with optimized timeout and error handling"""
     
     if ollama_url is None:
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    
+    # Validate endpoint first
+    if not _validate_ollama_endpoint(ollama_url):
+        raise ConnectionError(f"Cannot connect to Ollama at {ollama_url}")
     
     url = f"{ollama_url}/api/chat"
     
@@ -190,7 +205,10 @@ def _call_ollama_with_finish_reason(model, messages, ollama_url=None):
     }
     
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        # Use MUCH longer timeout for Ollama inference
+        # Connect: 10s, Read: 600s (10 minutes for model inference)
+        # Mistral 7B can take 30-60 seconds per request on RTX 4090
+        response = requests.post(url, json=payload, timeout=(10, 600))
         response.raise_for_status()
         result = response.json()
         
@@ -202,6 +220,9 @@ def _call_ollama_with_finish_reason(model, messages, ollama_url=None):
         
         return content, inferred_reason
     
+    except requests.Timeout as e:
+        logger.error(f"Ollama request timeout after 600s: {e}")
+        raise ConnectionError(f"Ollama inference timeout (model inference very slow or overloaded): {e}")
     except requests.RequestException as e:
         logger.error(f"Ollama API error: {e}")
         raise
@@ -254,7 +275,8 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=None, chat_history=Non
     else:
         messages = [{"role": "user", "content": prompt}]
     
-    max_retries = 10
+    # Reduce retries - Ollama inference with long timeout doesn't need many retries
+    max_retries = 3 if config_provider == "ollama" else 5
     
     for attempt in range(max_retries):
         try:
@@ -278,9 +300,11 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=None, chat_history=Non
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(1)
+                # Longer backoff for Ollama to avoid hammering the inference engine
+                wait_time = 3 if config_provider == "ollama" else 1
+                time.sleep(wait_time)
             else:
-                logger.error(f"Max retries ({max_retries}) reached for prompt")
+                logger.error(f"Max retries ({max_retries}) reached for {config_provider}")
                 return "Error", "error"
 
 
@@ -349,6 +373,9 @@ async def ChatGPT_API_async(model, prompt, api_key=None):
         loop = asyncio.get_event_loop()
         executor = ThreadPoolExecutor(max_workers=1)
         
+        # Reduce retries for Ollama to 2 (each attempt has long timeout already)
+        max_retries = 2
+        
         for attempt in range(max_retries):
             try:
                 # Run sync Ollama call in thread pool to avoid blocking
@@ -367,7 +394,7 @@ async def ChatGPT_API_async(model, prompt, api_key=None):
 
 
 def _call_ollama_sync(model, messages, ollama_url=None):
-    """Synchronous Ollama call (used by async wrapper via executor)"""
+    """Synchronous Ollama call (used by async wrapper via executor) with optimized timeout"""
     
     if ollama_url is None:
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -384,13 +411,18 @@ def _call_ollama_sync(model, messages, ollama_url=None):
     }
     
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        # Use much longer timeout for Ollama inference
+        # Connect: 10s, Read: 600s (10 minutes for model inference)
+        response = requests.post(url, json=payload, timeout=(10, 600))
         response.raise_for_status()
         result = response.json()
         
         content = result.get('message', {}).get('content', '')
         return content
     
+    except requests.Timeout as e:
+        logger.error(f"Ollama sync request timeout: {e}")
+        raise ConnectionError(f"Ollama timeout (inference may be slow): {e}")
     except requests.RequestException as e:
         logger.error(f"Ollama sync API error: {e}")
         raise  
@@ -698,7 +730,7 @@ def add_preface_if_needed(data):
 
 
 
-def get_page_tokens(pdf_path, model="gpt-4o-2024-11-20", pdf_parser="PyPDF2"):
+def get_page_tokens(pdf_path, model="mistral:7b", pdf_parser="PyPDF2"):
     if HAS_TIKTOKEN:
         enc = tiktoken.encoding_for_model(model)
         encode_fn = lambda text: len(enc.encode(text))
@@ -909,7 +941,15 @@ async def generate_node_summary(node, model=None):
 
 async def generate_summaries_for_structure(structure, model=None):
     nodes = structure_to_list(structure)
-    tasks = [generate_node_summary(node, model=model) for node in nodes]
+    
+    # Limited concurrency for summary generation - Ollama inference is slow
+    semaphore = asyncio.Semaphore(1)
+    
+    async def limited_summary(node):
+        async with semaphore:
+            return await generate_node_summary(node, model=model)
+    
+    tasks = [limited_summary(node) for node in nodes]
     summaries = await asyncio.gather(*tasks)
     
     for node, summary in zip(nodes, summaries):

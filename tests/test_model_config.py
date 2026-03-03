@@ -22,7 +22,7 @@ class TestModelCapabilities:
     """Test model capabilities registry"""
     
     def test_phi3_3_8b_capabilities(self):
-        """Test phi3:3.8b (default 3B model) capabilities"""
+        """Test phi3:3.8b capabilities"""
         caps = get_model_capabilities("phi3:3.8b")
         
         assert caps.name == "phi3:3.8b"
@@ -105,14 +105,14 @@ class TestModelSelection:
         assert "mistral:7b" in ollama_models
     
     def test_get_recommended_model_openai(self):
-        """Should recommend appropriate OpenAI model"""
+        """Should return global default model for openai provider fallback"""
         model = get_recommended_model("openai")
-        assert model == "gpt-4o-2024-11-20"
+        assert model == "mistral:7b"
     
     def test_get_recommended_model_ollama_default(self):
-        """Should recommend phi3:3.8b as default Ollama model"""
+        """Should recommend mistral:7b as default Ollama model"""
         model = get_recommended_model("ollama")
-        assert model == "phi3:3.8b"
+        assert model == "mistral:7b"
     
     def test_get_recommended_model_ollama_with_limit(self):
         """Should respect parameter limit"""
@@ -147,15 +147,15 @@ class TestConfigYamlUpdates:
         assert config.provider in ['openai', 'ollama', 'hybrid']
     
     def test_config_has_ollama_model(self):
-        """Config should have ollama_model setting with 3B default"""
+        """Config should have ollama_model setting with mistral:7b default"""
         loader = ConfigLoader()
         config = loader.load()
         
         assert hasattr(config, 'ollama_model')
         assert isinstance(config.ollama_model, str)
         
-        # Should be phi3:3.8b (3B model)
-        assert "phi3" in config.ollama_model.lower() or "3" in config.ollama_model
+        # Should default to mistral:7b
+        assert config.ollama_model == "mistral:7b"
     
     def test_config_has_model_config(self):
         """Config should have model_config section"""
@@ -178,7 +178,7 @@ class TestUtilsFunctions:
     """Test utils.py model selection functions"""
     
     def test_get_effective_ollama_model_default(self):
-        """Should return phi3:3.8b as default"""
+        """Should return mistral:7b as default"""
         # Clear environment
         if "OLLAMA_MODEL" in os.environ:
             original = os.environ["OLLAMA_MODEL"]
@@ -187,7 +187,7 @@ class TestUtilsFunctions:
             original = None
         
         model = get_effective_ollama_model()
-        assert "phi3" in model.lower() or "3" in model
+        assert model == "mistral:7b"
         
         # Restore
         if original:
@@ -252,26 +252,26 @@ class TestUtilsFunctions:
         assert result is not False
 
 
-class Test3BModelDefault:
-    """Test that 3B model is properly configured as default"""
+class TestDefaultModelConfiguration:
+    """Test that default model is properly configured"""
     
-    def test_default_model_is_3b(self):
-        """Verify default model is approximately 3B parameters"""
+    def test_default_model_is_7b(self):
+        """Verify default model is approximately 7B parameters"""
         loader = ConfigLoader()
         config = loader.load()
         
         model = config.ollama_model
         caps = get_model_capabilities(model)
         
-        # Should be 3B or close to it
+        # Should be 7B or close to it
         param_str = caps.parameter_count.rstrip("B")
         if param_str != "unknown":
             param_count = float(param_str)
-            assert 2.5 <= param_count <= 4.5, \
-                f"Default model {model} has {param_count}B params, expected ~3B"
+            assert 6.0 <= param_count <= 8.5, \
+                f"Default model {model} has {param_count}B params, expected ~7B"
     
     def test_default_model_has_reasonable_context(self):
-        """Default 3B model should have reasonable context window"""
+        """Default model should have reasonable context window"""
         loader = ConfigLoader()
         config = loader.load()
         

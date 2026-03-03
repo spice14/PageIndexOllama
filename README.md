@@ -64,13 +64,26 @@ It simulates how *human experts* navigate and extract knowledge from complex doc
 
 ### 🎯 Core Features 
 
+This repository provides a **fully open-source, locally-runnable** implementation of PageIndex powered by **Ollama**. No API keys, no cloud dependencies, complete privacy.
+
 Compared to traditional vector-based RAG, **PageIndex** features:
 - **No Vector DB**: Uses document structure and LLM reasoning for retrieval, instead of vector similarity search.
 - **No Chunking**: Documents are organized into natural sections, not artificial chunks.
 - **Human-like Retrieval**: Simulates how human experts navigate and extract knowledge from complex documents.
-- **Better Explainability and Traceability**: Retrieval is based on reasoning — traceable and interpretable, with page and section references. No more opaque, approximate vector search (“vibe retrieval”).
+- **Better Explainability and Traceability**: Retrieval is based on reasoning — traceable and interpretable, with page and section references. No more opaque, approximate vector search ("vibe retrieval").
+
+### 🔒 Fully Local & Private (Ollama)
+
+This implementation is **completely decoupled from OpenAI SDK** and runs entirely on your local machine:
+- ✅ **Zero API Costs**: No per-token charges, unlimited usage
+- ✅ **Complete Privacy**: Your documents never leave your machine
+- ✅ **No API Keys Required**: No external dependencies or authentication needed
+- ✅ **Offline Capable**: Works without internet connection (after initial model download)
+- ✅ **Production Ready**: Organized file structure with comprehensive test suite in [tests/e2e/](tests/e2e/)
+- ✅ **Multiple Model Support**: Compatible with any Ollama model (Mistral, Llama, Qwen, etc.)
 
 PageIndex powers a reasoning-based RAG system that achieved **state-of-the-art** [98.7% accuracy](https://github.com/VectifyAI/Mafin2.5-FinanceBench) on FinanceBench, demonstrating superior performance over vector-based RAG solutions in professional document analysis (see our [blog post](https://vectify.ai/blog/Mafin2.5) for details).
+
 
 ### 📍 Explore PageIndex
 
@@ -78,10 +91,17 @@ To learn more, please see a detailed introduction of the [PageIndex framework](h
 
 The PageIndex service is available as a ChatGPT-style [chat platform](https://chat.pageindex.ai), or can be integrated via [MCP](https://pageindex.ai/mcp) or [API](https://docs.pageindex.ai/quickstart).
 
-### 🛠️ Deployment Options
-- Self-host — run locally with this open-source repo.
-- Cloud Service — try instantly with our [Chat Platform](https://chat.pageindex.ai/), or integrate with [MCP](https://pageindex.ai/mcp) or [API](https://docs.pageindex.ai/quickstart).
-- _Enterprise_ — private or on-prem deployment. [Contact us](https://ii2abc2jejf.typeform.com/to/tK3AXl8T) or [book a demo](https://calendly.com/pageindex/meet) for more details.
+### 🛠️ About This Repository
+
+**This is the fully open-source, Ollama-powered version** of PageIndex that runs **100% locally** on your machine. It's been completely decoupled from OpenAI SDK and uses Ollama for inference, giving you:
+- Complete control and privacy over your documents
+- Zero ongoing API costs
+- Freedom to use any open-source model
+- No internet dependency for processing (after initial model download)
+
+For cloud-hosted options, see:
+- **Cloud Service** — [Chat Platform](https://chat.pageindex.ai/), [MCP](https://pageindex.ai/mcp), or [API](https://docs.pageindex.ai/quickstart)
+- **Enterprise** — Private or on-prem deployment. [Contact us](https://ii2abc2jejf.typeform.com/to/tK3AXl8T) or [book a demo](https://calendly.com/pageindex/meet)
 
 ### 🧪 Quick Hands-on
 
@@ -133,13 +153,39 @@ Below is an example PageIndex tree structure. Also see more example [documents](
 ...
 ```
 
-You can generate the PageIndex tree structure with this open-source repo, or use our [API](https://docs.pageindex.ai/quickstart) 
+With this Ollama-powered implementation, you can generate the PageIndex tree structure **completely locally** with **zero external API calls** and **no API keys required**.
 
 ---
 
-# ⚙️ Package Usage
+# 📂 Repository Structure
 
-You can follow these steps to generate a PageIndex tree from a PDF document.
+```
+PageIndexOllama/
+├── cli.py                      # Main CLI entry point for processing documents
+├── pageindex/                  # Core PageIndex package
+│   ├── page_index.py          # Main indexing logic
+│   ├── utils.py               # Provider-agnostic LLM utilities
+│   ├── response_handlers.py  # Response normalization
+│   └── config.yaml            # Configuration settings
+├── scripts/                    # Setup and utility scripts
+│   ├── setup_ollama.sh        # Automated Ollama setup (Linux/macOS)
+│   └── setup_ollama.ps1       # Automated Ollama setup (Windows)
+├── tests/                      # Test suite
+│   ├── e2e/                   # End-to-end integration tests
+│   │   ├── test_direct_integration.py
+│   │   ├── test_full_integration.py
+│   │   └── test_comprehensive.py
+│   └── pdfs/                  # Test documents
+├── cookbook/                   # Jupyter notebooks with examples
+├── tutorials/                  # Practical guides
+└── requirements.txt           # Python dependencies
+```
+
+---
+
+# ⚙️ Local Setup & Usage
+
+Follow these steps to run PageIndex entirely on your local machine with Ollama.
 
 ### 1. Install dependencies
 
@@ -147,18 +193,37 @@ You can follow these steps to generate a PageIndex tree from a PDF document.
 pip3 install --upgrade -r requirements.txt
 ```
 
-### 2. Set your OpenAI API key
+### 2. Install and configure Ollama
 
-Create a `.env` file in the root directory and add your API key:
+**Automated setup** (recommended):
 
 ```bash
-CHATGPT_API_KEY=your_openai_key_here
+# For Linux/macOS:
+bash scripts/setup_ollama.sh
+
+# For Windows:
+powershell scripts/setup_ollama.ps1
+```
+
+This script will install Ollama, pull the default model (mistral:7b), and start the Ollama service.
+
+**Manual setup**:
+
+1. Install Ollama from [ollama.ai](https://ollama.ai)
+2. Pull a model: `ollama pull mistral:7b`
+3. Start Ollama: `ollama serve`
+4. Create `.env` file:
+
+```bash
+LLM_PROVIDER=ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=mistral:7b
 ```
 
 ### 3. Run PageIndex on your PDF
 
 ```bash
-python3 run_pageindex.py --pdf_path /path/to/your/document.pdf
+python3 cli.py --pdf_path /path/to/your/document.pdf
 ```
 
 <details>
@@ -167,7 +232,7 @@ python3 run_pageindex.py --pdf_path /path/to/your/document.pdf
 You can customize the processing with additional optional arguments:
 
 ```
---model                 OpenAI model to use (default: gpt-4o-2024-11-20)
+--model                 Ollama model to use (default: mistral:7b; try llama3, qwen2.5, etc.)
 --toc-check-pages       Pages to check for table of contents (default: 20)
 --max-pages-per-node    Max pages per node (default: 10)
 --max-tokens-per-node   Max tokens per node (default: 20000)
@@ -183,7 +248,7 @@ You can customize the processing with additional optional arguments:
 We also provide markdown support for PageIndex. You can use the `-md_path` flag to generate a tree structure for a markdown file.
 
 ```bash
-python3 run_pageindex.py --md_path /path/to/your/document.md
+python3 cli.py --md_path /path/to/your/document.md
 ```
 
 > Note: in this function, we use "#" to determine node heading and their levels. For example, "##" is level 2, "###" is level 3, etc. Make sure your markdown file is formatted correctly. If your Markdown file was converted from a PDF or HTML, we don't recommend using this function, since most existing conversion tools cannot preserve the original hierarchy. Instead, use our [PageIndex OCR](https://pageindex.ai/blog/ocr), which is designed to preserve the original hierarchy, to convert the PDF to a markdown file and then use this function.

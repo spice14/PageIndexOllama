@@ -4,6 +4,7 @@ import copy
 import math
 import random
 import re
+import asyncio
 from .utils import *
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -73,7 +74,7 @@ async def check_title_appearance_in_start(title, page_text, model=None, logger=N
 
 async def check_title_appearance_in_start_concurrent(structure, page_list, model=None, logger=None):
     if logger:
-        logger.info("Checking title appearance in start concurrently")
+        logger.info("Checking title appearance in start concurrently (with concurrency limit)")
     
     # skip items without physical_index
     for item in structure:
@@ -81,12 +82,19 @@ async def check_title_appearance_in_start_concurrent(structure, page_list, model
             item['appear_start'] = 'no'
 
     # only for items with valid physical_index
+    # Use a semaphore to limit concurrent requests to 1 (sequential) to avoid overwhelming Ollama
+    semaphore = asyncio.Semaphore(1)
+    
+    async def limited_check(item, page_text):
+        async with semaphore:
+            return await check_title_appearance_in_start(item['title'], page_text, model=model, logger=logger)
+    
     tasks = []
     valid_items = []
     for item in structure:
         if item.get('physical_index') is not None:
             page_text = page_list[item['physical_index'] - 1][0]
-            tasks.append(check_title_appearance_in_start(item['title'], page_text, model=model, logger=logger))
+            tasks.append(limited_check(item, page_text))
             valid_items.append(item)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -392,18 +400,24 @@ async def find_toc_pages_async(start_page_index, page_list, opt, logger=None):
             logger.info('No pages to check for TOC')
         return []
     
-    # Create parallel tasks for all pages to check
+    # Create tasks for checking pages with semaphore to limit concurrency
+    semaphore = asyncio.Semaphore(2)  # Limit to 2 concurrent requests to Ollama
+    
+    async def limited_toc_check(i, content):
+        async with semaphore:
+            return await toc_detector_single_page_async(content, model=opt.model)
+    
     tasks = []
     page_indices = []
     for i in range(start_page_index, start_page_index + max_check):
         # Truncate content to first 2000 chars for faster processing
         content = page_list[i][0][:2000] if len(page_list[i][0]) > 2000 else page_list[i][0]
-        tasks.append(toc_detector_single_page_async(content, model=opt.model))
+        tasks.append(limited_toc_check(i, content))
         page_indices.append(i)
     
-    # Execute all in parallel
+    # Execute with limited concurrency
     if logger:
-        logger.info(f'Checking {len(tasks)} pages for TOC in parallel')
+        logger.info(f'Checking {len(tasks)} pages for TOC (limited concurrency)')
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
@@ -581,7 +595,7 @@ def remove_first_physical_index_section(text):
     return text
 
 ### add verify completeness
-def generate_toc_continue(toc_content, part, model="gpt-4o-2024-11-20"):
+def generate_toc_continue(toc_content, part, model="mistral:7b"):
     print('start generate_toc_continue')
     prompt = """
     You are an expert in extracting hierarchical tree structure.
@@ -854,7 +868,7 @@ async def check_toc_async(page_list, opt=None):
 
 
 ################### fix incorrect toc #########################################################
-def single_toc_item_index_fixer(section_title, content, model="gpt-4o-2024-11-20"):
+def single_toc_item_index_fixer(section_title, content, model="mistral:7b"):
     toc_extractor_prompt = """
     You are given a section title and several pages of a document, your job is to find the physical index of the start page of the section in the partial document.
 
@@ -951,9 +965,15 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
             'is_valid': check_result['answer'] == 'yes'
         }
 
-    # Process incorrect items concurrently
+    # Process incorrect items with limited concurrency
+    semaphore = asyncio.Semaphore(1)  # Process one at a time to avoid overwhelming Ollama
+    
+    async def limited_process(item):
+        async with semaphore:
+            return await process_and_check_item(item)
+    
     tasks = [
-        process_and_check_item(item)
+        limited_process(item)
         for item in incorrect_results
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)

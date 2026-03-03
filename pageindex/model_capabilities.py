@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Constants
-DEFAULT_3B_MODEL = "phi3:3.8b"
+DEFAULT_3B_MODEL = "mistral:7b"
 
 
 @dataclass
@@ -83,8 +83,8 @@ MODEL_REGISTRY: Dict[str, ModelCapabilities] = {
     ),
     
     # Ollama Models - Small (< 4B parameters)
-    DEFAULT_3B_MODEL: ModelCapabilities(
-        name=DEFAULT_3B_MODEL,
+    "phi3:3.8b": ModelCapabilities(
+        name="phi3:3.8b",
         provider="ollama",
         context_window=4096,
         supports_json_mode=False,
@@ -256,7 +256,7 @@ def get_recommended_model(provider: str, parameter_limit: Optional[int] = None) 
         Recommended model name
     """
     if provider == "openai":
-        return "gpt-4o-2024-11-20"
+        return "mistral:7b"
     
     elif provider == "ollama":
         if parameter_limit is None:

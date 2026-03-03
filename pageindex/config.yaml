@@ -3,22 +3,21 @@
 # ==============================================================================
 
 # Default Provider Selection
-provider: "ollama"  # Options: "openai", "ollama", "hybrid"
+provider: "ollama"  # Options: "ollama", "openai", "hybrid" (default: local Ollama)
 
-# OpenAI Model Configuration (for fallback/compatibility)
+# OpenAI Model Configuration (optional fallback/compatibility)
 model: "gpt-4o-2024-11-20"  # OpenAI model (128K context window)
 
 # Ollama Model Configuration
-# Using phi3:3.8b as default - Microsoft Phi-3 Mini (3.8B parameters)
-# Excellent reasoning capabilities for small model size
-ollama_model: "phi3:3.8b"  # Default 3B SLM (overridden by OLLAMA_MODEL env var)
+# Default local model for fully private inference (no external API required)
+ollama_model: "mistral:7b"  # Default local model (overridden by OLLAMA_MODEL env var)
 
 # Alternative Ollama Models (can be set via OLLAMA_MODEL env var):
-# - phi3:3.8b         → 3.8B, best balance (default)
+# - mistral:7b        → 7B, more capable (default)
+# - phi3:3.8b         → 3.8B, lightweight and fast
 # - gemma:2b          → 2B, fast but less capable
 # - gemma:3b          → 3B Google Gemma
 # - stablelm2:1.6b    → 1.6B, very fast
-# - mistral:7b        → 7B, more capable but slower
 # - llama3:8b         → 8B, highest quality
 
 # Model Capabilities
@@ -29,7 +28,7 @@ model_config:
     supports_streaming: true
   
   ollama:
-    context_window: 4096  # phi3:3.8b context window
+    context_window: 8192  # mistral:7b context window
     supports_json_mode: false  # Most Ollama models
     supports_streaming: true
 
