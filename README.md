@@ -162,22 +162,50 @@ With this Ollama-powered implementation, you can generate the PageIndex tree str
 ```
 PageIndexOllama/
 ├── cli.py                      # Main CLI entry point for processing documents
+├── run_comprehensive_e2e_tests.py  # Production E2E test suite runner
 ├── pageindex/                  # Core PageIndex package
 │   ├── page_index.py          # Main indexing logic
 │   ├── utils.py               # Provider-agnostic LLM utilities
 │   ├── response_handlers.py  # Response normalization
+│   ├── models.py              # Model definitions
+│   ├── prompt_loader.py       # Prompt template loader
+│   ├── prompts/               # LLM prompt templates
 │   └── config.yaml            # Configuration settings
+├── resources/                  # Configuration and resource files
+│   └── models/                # Ollama model definitions
+│       ├── Modelfile-mistral24b-16k  # Production model (24B, 16k context)
+│       └── Modelfile.mistral24b      # Alternative model configuration
 ├── scripts/                    # Setup and utility scripts
 │   ├── setup_ollama.sh        # Automated Ollama setup (Linux/macOS)
-│   └── setup_ollama.ps1       # Automated Ollama setup (Windows)
-├── tests/                      # Test suite
+│   ├── setup_ollama.ps1       # Automated Ollama setup (Windows)
+│   ├── set_model_env.sh       # Model environment configuration
+│   └── monitor_tests.sh       # Test monitoring utility
+├── tests/                      # Comprehensive test suite
 │   ├── e2e/                   # End-to-end integration tests
-│   │   ├── test_direct_integration.py
+│   │   ├── test_comprehensive.py  # Full 4-stage workflow tests
 │   │   ├── test_full_integration.py
-│   │   └── test_comprehensive.py
-│   └── pdfs/                  # Test documents
+│   │   └── test_direct_integration.py
+│   ├── legacy_runners/        # Deprecated test runners (reference only)
+│   │   ├── run_e2e_tests.py
+│   │   ├── run_e2e.sh
+│   │   └── minimal_e2e_test.py
+│   ├── test_tree_gen.py       # Tree generation unit tests
+│   ├── reports/               # E2E test output reports (gitignored)
+│   ├── pdfs/                  # Test documents (10 diverse PDFs)
+│   └── results/               # Test output artifacts
+├── docs/                       # Documentation
+│   ├── archived/              # Historical analysis reports
+│   ├── QUICK_START_MODEL.md   # Model setup quick start
+│   ├── MODEL_UPGRADE.md       # Model upgrade guide
+│   └── *.md                   # Various development docs
 ├── cookbook/                   # Jupyter notebooks with examples
-├── tutorials/                  # Practical guides
+│   ├── pageindex_RAG_simple.ipynb     # Basic vectorless RAG example
+│   ├── vision_RAG_pageindex.ipynb     # Vision-based RAG example
+│   └── README.md              # Cookbook guide
+├── tutorials/                  # Practical guides and demos
+├── CHANGELOG.md               # Version history
+├── LICENSE                    # MIT License
+├── README.md                  # This file
 └── requirements.txt           # Python dependencies
 ```
 
@@ -210,7 +238,7 @@ This script will install Ollama, create the production model (mistral24b-16k), a
 **Manual setup**:
 
 1. Install Ollama from [ollama.ai](https://ollama.ai)
-2. Create the production model: `ollama create mistral24b-16k -f Modelfile-mistral24b-16k`
+2. Create the production model: `ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k`
 3. Start Ollama: `ollama serve`
 4. Create `.env` file:
 

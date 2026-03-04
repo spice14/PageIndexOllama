@@ -126,15 +126,15 @@ echo ""
 # Step 6: Create production model
 echo "Step 6: Creating production model (mistral24b-16k)..."
 echo "This model uses mistral-small:24b base with optimized 16k constraints for document analysis..."
-if command -v ollama &> /dev/null && [ -f "Modelfile-mistral24b-16k" ]; then
-    if ollama create mistral24b-16k -f Modelfile-mistral24b-16k; then
+if command -v ollama &> /dev/null && [ -f "resources/models/Modelfile-mistral24b-16k" ]; then
+    if ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k; then
         echo "✓ mistral24b-16k model ready!"
     else
-        echo "⚠ Failed to create mistral24b-16k. You can create it manually: ollama create mistral24b-16k -f Modelfile-mistral24b-16k"
+        echo "⚠ Failed to create mistral24b-16k. You can create it manually: ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k"
     fi
 else
     echo "⚠ Skipping model creation. Run this command manually when ready:"
-    echo "   ollama create mistral24b-16k -f Modelfile-mistral24b-16k"
+    echo "   ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k"
 fi
 echo ""
 
