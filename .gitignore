@@ -161,3 +161,4 @@ test_parallel_processing.py
 tests/results
 tests/reports/
 run_comprehensive_e2e.log
+records

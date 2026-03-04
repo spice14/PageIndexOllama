@@ -6,6 +6,8 @@ You point it to a PDF (or Markdown), it builds a **hierarchical tree index**, an
 
 Run it on your own machine with **no API keys** and no required external inference service.
 
+Detailed technical delta report: [ENHANCEMENTS_REPORT.md](ENHANCEMENTS_REPORT.md)
+
 ---
 
 ## ✨ Why This Fork Exists
@@ -29,6 +31,27 @@ This repo keeps the core PageIndex retrieval design while making local execution
 - Offline-capable after model download.
 - No external API dependency required for normal local operation.
 
+### Enhancement Highlights in This Fork
+
+- **Runtime decoupling:** provider-routed wrappers replace OpenAI-tied call assumptions.
+- **Response contract stability:** finish-reason and response-shape normalization reduce provider-specific branching downstream.
+- **Prompt governance:** registry + loader architecture replaces large inline prompts and improves reproducibility.
+- **Performance:** bounded async parallelism accelerates TOC/summarization stages for local inference.
+- **Robustness:** adaptive chunking and hierarchical fallbacks reduce failure rates on difficult PDFs.
+- **Validation:** expanded e2e/integration/performance coverage validates local-first behavior end-to-end.
+
+### Upstream vs Fork (Practical Delta)
+
+| Area | Upstream | Fork | Decoupling Value |
+|---|---|---|---|
+| Provider API wrappers | OpenAI-branded wrappers | Provider-routed `Ollama_API*` wrappers | High |
+| Finish reason semantics | Provider-specific assumptions | Normalized response handler | High |
+| Credentials/env handling | More distributed | Centralized provider-aware module | Medium-High |
+| Prompt management | Inline prompt strings | Registry + loader + prompt files | High (operational) |
+| TOC/summary processing | More sequential | Async bounded concurrency | Medium-High |
+| Fallback behavior | Simpler/no hardening in some paths | Hierarchical/adaptive fallback paths | Medium |
+| CLI defaults | OpenAI model default | Local model default path | High (UX/ops) |
+| Test coverage | Minimal Python tests | Expanded e2e/integration/perf checks | High (risk reduction) |
 ---
 
 ## 🧠 How It Works (Architecture)
@@ -46,7 +69,23 @@ Key implementation points:
 - `pageindex/utils.py` contains model-call wrappers (`Ollama_API_with_finish_reason`, `Ollama_API`, `Ollama_API_async`) and env-driven provider/model resolution.
 - `pageindex/response_handlers.py` normalizes response shape (including finish reason handling) to keep downstream logic stable.
 - `pageindex/continuation.py` handles truncated outputs by generating continuation prompts and stitching responses.
+- `pageindex/credentials.py` centralizes provider-specific credential/environment resolution.
+- `pageindex/models.py` defines typed schemas for structured outputs and parsing stability.
+- `pageindex/chunking_config.py` provides adaptive chunking strategy used for large-document handling.
 - Prompt templates are loaded through `pageindex/prompt_loader.py` and `pageindex/prompts/`.
+
+### Provider-Decoupling Design
+
+This fork keeps provider-specific behavior at the runtime boundary:
+
+1. Resolve provider/model from environment and config.
+2. Dispatch to provider-specific call path.
+3. Normalize output/finish reason into a stable internal shape.
+4. Continue tree/search/answer logic with provider-agnostic contracts.
+
+This keeps indexing and retrieval flows isolated from vendor-specific response differences.
+
+This design allows the same indexing/search pipeline to operate across providers with minimal call-site change.
 
 Runtime controls:
 
@@ -143,6 +182,7 @@ Main test surfaces:
 - `run_comprehensive_e2e_tests.py`
 - `tests/e2e/`
 - `tests/`
+- `test_parallel_processing.py`
 
 Run:
 
@@ -157,8 +197,40 @@ What these validate (end-to-end):
 - tree availability/structure checks
 - LLM-driven node selection over tree content
 - answer generation from extracted node context
+- provider-decoupled response handling (including continuation behavior)
+- concurrency paths used for local throughput improvements
 
 This fork’s validation flow is intended to run locally with Ollama configured as active provider.
+
+---
+
+## ⚙️ Performance and Reliability Enhancements
+
+- **Parallel TOC/summarization paths:** async + semaphore-limited execution improves wall-clock performance.
+- **Prompt externalization:** prompts are versionable artifacts rather than embedded strings.
+- **Structured-output hardening:** JSON extraction/sanitization paths reduce breakage on imperfect model output.
+- **Continuation control:** truncated generations are recovered through continuation prompts.
+- **No-TOC resiliency:** fallback flows preserve output generation when canonical TOC extraction is weak.
+
+### Why These Enhancements Matter Locally
+
+Local-first systems face two practical constraints: variable model quality and slower inference throughput.
+These enhancements directly target those constraints by improving deterministic behavior under imperfect outputs
+and reducing total latency through bounded parallelism.
+
+---
+
+## 📌 Current Standardization Gaps
+
+The core architecture is stable, but a few consistency items remain:
+
+- Canonical default model should be unified across CLI, config, docs, and tests.
+- Tree-search output key naming should be standardized (`node_ids` vs `relevant_node_ids`).
+- Some legacy naming/constants should be aligned with current model/provider behavior.
+
+These are consistency and maintenance concerns, not blockers for local-first operation.
+
+For full technical analysis, see [ENHANCEMENTS_REPORT.md](ENHANCEMENTS_REPORT.md).
 
 ---
 
@@ -184,6 +256,9 @@ PageIndexOllama/
 │   ├── utils.py
 │   ├── response_handlers.py
 │   ├── continuation.py
+│   ├── credentials.py
+│   ├── models.py
+│   ├── chunking_config.py
 │   ├── prompt_loader.py
 │   └── prompts/
 ├── scripts/
@@ -202,10 +277,14 @@ PageIndexOllama/
 
 This repository is an **independent fork**.
 
-- Upstream: https://github.com/VectifyAI/PageIndex
+- Upstream: [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex)
 - This fork is maintained separately and focuses on local Ollama-based operation.
 - No official affiliation or endorsement is implied unless explicitly authorized by upstream maintainers.
 - For upstream cloud-hosted offerings, refer to upstream documentation.
+
+This fork’s change direction can be summarized as:
+
+**provider decoupling + local-first operationalization + reliability/performance hardening**.
 
 ---
 
