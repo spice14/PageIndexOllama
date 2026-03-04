@@ -1,4 +1,4 @@
-# 🌲 PageIndex-Ollama: Local-First Tree RAG for Long Documents
+# 🌲 PageIndexOllama: Local-First Tree RAG for Long Documents
 
 **PageIndex-Ollama** is an independent fork of PageIndex focused on **fully local document indexing and reasoning** with **Ollama**.
 
