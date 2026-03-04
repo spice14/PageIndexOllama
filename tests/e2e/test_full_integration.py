@@ -30,14 +30,14 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 
 from pageindex import page_index_main
-from pageindex.utils import ChatGPT_API, count_tokens
+from pageindex.utils import Ollama_API, count_tokens
 from pageindex.model_capabilities import get_model_capabilities
 
 
 class E2ETestRunner:
     """End-to-end test runner for PageIndex"""
     
-    def __init__(self, pdf_path: str, model: str = "mistral:7b"):
+    def __init__(self, pdf_path: str, model: str = "qwen2.5:14b"):
         self.pdf_path = pdf_path
         self.model = model
         self.start_time = None
@@ -239,7 +239,7 @@ TREE STRUCTURE:
         
         try:
             # Call LLM with tree query
-            response = ChatGPT_API(
+            response = Ollama_API(
                 model=self.model,
                 prompt=query
             )
@@ -271,6 +271,10 @@ TREE STRUCTURE:
     
     def _step5_extract_and_answer(self, tree_data: Dict[str, Any], node_ids: List[str]) -> str:
         """Step 5: Extract node text and produce final answer"""
+        import sys
+        sys.path.insert(0, '/workspace/PageIndexOllama')
+        from pageindex.prompt_loader import format_prompt_by_use_case
+        
         step_start = time.time()
         
         logger.info(f"Extracting content from {len(node_ids)} nodes...")
@@ -281,22 +285,23 @@ TREE STRUCTURE:
         logger.info(f"✓ Extracted {len(extracted_content)} sections")
         logger.info(f"  Total content length: {sum(len(c.get('text', '')) for c in extracted_content)} characters")
         
-        # Build final answer using extracted content
-        synthesis_prompt = f"""Based on these extracted sections from the document, provide a comprehensive summary answering:
-1. What is the main contribution of this document?
-2. What are the key technical innovations?
-3. Why is this important?
-
-EXTRACTED SECTIONS:
-"""
-        
+        # Build context from extracted sections
+        context_parts = []
         for i, section in enumerate(extracted_content[:5], 1):  # Use first 5 sections
-            synthesis_prompt += f"\n\n--- Section {i} (ID: {section.get('id', 'N/A')}) ---\n"
-            synthesis_prompt += section.get('text', '')[:1000]  # Limit to 1000 chars per section
+            context_parts.append(f"--- Section {i} (ID: {section.get('id', 'N/A')}) ---\n{section.get('text', '')[:1000]}")
+        
+        context = "\n\n".join(context_parts)
+        
+        # Load synthesis prompt from registry
+        synthesis_prompt = format_prompt_by_use_case(
+            "test.answer_generation",
+            question="What is the main contribution and key technical innovations in this document?",
+            context=context
+        )
         
         logger.info("\nSynthesizing final answer from extracted content...")
         
-        final_answer = ChatGPT_API(
+        final_answer = Ollama_API(
             model=self.model,
             prompt=synthesis_prompt
         )
@@ -428,7 +433,7 @@ def main():
     logger.info("╚" + "="*78 + "╝")
     
     # Run E2E test
-    runner = E2ETestRunner(pdf_path, model="mistral:7b")
+    runner = E2ETestRunner(pdf_path, model="qwen2.5:14b")
     results = runner.run()
     
     # Save results to JSON

@@ -146,7 +146,8 @@ class CredentialValidator:
 
 # Initialize default credential system
 _env_provider = EnvironmentCredentialProvider(env_var_name="CHATGPT_API_KEY")
-_hybrid_provider = HybridCredentialProvider([_env_provider])
+_legacy_env_provider = EnvironmentCredentialProvider(env_var_name="Ollama_API_KEY")
+_hybrid_provider = HybridCredentialProvider([_env_provider, _legacy_env_provider])
 
 
 def get_ollama_model() -> Optional[str]:
@@ -167,7 +168,7 @@ def get_api_key(provider_name: str = "openai") -> Optional[str]:
     """Get API key for specified provider"""
     
     if provider_name == "openai":
-        key = _hybrid_provider.get_credential("CHATGPT_API_KEY")
+        key = os.getenv("CHATGPT_API_KEY") or os.getenv("Ollama_API_KEY")
         
         # Validate key if present
         if key and not CredentialValidator.is_valid_openai_key(key):

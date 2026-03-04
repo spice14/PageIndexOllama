@@ -1,0 +1,22 @@
+FROM mistral-small:24b
+
+# Context window: 16k (reasonable for most docs, prevents O(n²) explosion)
+PARAMETER num_ctx 16384
+
+# Max generation length: 4096 tokens (sufficient for complex TOC transformation)
+PARAMETER num_predict 4096
+
+# Temperature: 0.2 (slightly creative but mostly deterministic)
+PARAMETER temperature 0.2
+
+# Top-p sampling: 0.9 (balanced diversity)
+PARAMETER top_p 0.9
+
+# Repeat penalty: 1.1 (reduce repetition)
+PARAMETER repeat_penalty 1.1
+
+# Stop tokens (ensure clean termination)
+PARAMETER stop "</s>"
+PARAMETER stop "###"
+
+SYSTEM """You are a precise document analysis assistant. Provide accurate, concise responses based strictly on the provided context. Follow JSON schemas exactly when specified."""

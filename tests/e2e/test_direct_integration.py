@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 # Set environment for Ollama
 os.environ["LLM_PROVIDER"] = "ollama"
-os.environ["OLLAMA_MODEL"] = "mistral:7b"
+os.environ["OLLAMA_MODEL"] = "mistral24b-16k"
 
 # Import PageIndex modules
 sys.path.insert(0, '/workspace/PageIndexOllama')
-from pageindex.utils import ChatGPT_API, count_tokens
+from pageindex.utils import Ollama_API, count_tokens
 from pageindex.page_index import page_index_main
 
 # Test configuration
@@ -120,18 +120,15 @@ def step_4_search_tree_with_llm(tree_result):
     
     # Build tree summary for LLM
     import json as json_module
+    from pageindex.prompt_loader import format_prompt_by_use_case
+    
     tree_summary = json_module.dumps(tree_result, indent=2, default=str)[:5000]  # Limit to 5K chars
     
-    search_query = """Given this document tree structure, find the sections that are most relevant for understanding:
-    1. The main attention mechanism proposed
-    2. How it differs from previous approaches (RNN/CNN)
-    3. Model architecture overview
-    
-    Return the node IDs of the most relevant sections in JSON format like:
-    {"relevant_node_ids": [id1, id2, id3], "reasoning": "brief explanation"}
-    
-    Tree structure (excerpt):
-    """ + tree_summary
+    search_query = format_prompt_by_use_case(
+        "test.tree_search",
+        question="Find sections about: 1) Main mechanism/innovation, 2) Differences from prior approaches, 3) Architecture overview",
+        tree_json=tree_summary
+    )
     
     logger.info(f"Searching tree with query...")
     logger.info(f"Query length: {len(search_query)} chars")
@@ -139,7 +136,7 @@ def step_4_search_tree_with_llm(tree_result):
     start_time = time.time()
     
     try:
-        result = ChatGPT_API(
+        result = Ollama_API(
             model='mistral:7b',
             prompt=search_query
         )
@@ -169,8 +166,9 @@ def step_5_extract_and_answer(tree_result, search_response):
         json_match = re.search(r'\{.*\}', search_response, re.DOTALL)
         if json_match:
             node_data = json.loads(json_match.group())
-            node_ids = node_data.get('relevant_node_ids', [])
-            reasoning = node_data.get('reasoning', 'No reasoning provided')
+            # Handle both "node_ids" and "relevant_node_ids" for backwards compatibility
+            node_ids = node_data.get('node_ids') or node_data.get('relevant_node_ids', [])
+            reasoning = node_data.get('reasoning', node_data.get('thinking', 'No reasoning provided'))
             logger.info(f"Extracted node IDs: {node_ids}")
             logger.info(f"Reasoning: {reasoning}")
         else:

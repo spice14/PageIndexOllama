@@ -1,0 +1,12 @@
+FROM mistral-small:24b
+
+# Increase max output tokens to fully use 16k profile
+PARAMETER num_predict 16384
+
+# Keep context window at max supported
+PARAMETER num_ctx 16384
+
+# Temperature and other parameters for consistency
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
