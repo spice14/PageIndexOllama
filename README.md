@@ -288,7 +288,4 @@ This fork’s change direction can be summarized as:
 
 ---
 
-## 📄 License
-
-This repository preserves the existing project license.
-See [MIT License © 2026 Ashwin Gupta](LICENSE).
+## 📄 License(LICENSE).
