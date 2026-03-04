@@ -288,4 +288,7 @@ This fork’s change direction can be summarized as:
 
 ---
 
-## 📄 License(LICENSE).
+## 📄 License
+
+See [LICENSE](LICENSE).
+
