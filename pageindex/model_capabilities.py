@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Constants
-DEFAULT_3B_MODEL = "mistral:7b"
+DEFAULT_3B_MODEL = "mistral24b-16k"
 
 
 @dataclass
@@ -177,6 +177,66 @@ MODEL_REGISTRY: Dict[str, ModelCapabilities] = {
     ),
     
     # Ollama Models - Large (> 10B parameters)
+    "mistral24b-16k": ModelCapabilities(
+        name="mistral24b-16k",
+        provider="ollama",
+        context_window=16384,  # 16k context window
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=25.0,
+        parameter_count="24B",
+        max_output_tokens=16384
+    ),
+    "mistral24b-prod": ModelCapabilities(
+        name="mistral24b-prod",
+        provider="ollama",
+        context_window=16384,  # 16k context window (production-constrained)
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=25.0,  # Slightly slower than 14B
+        parameter_count="24B",
+        max_output_tokens=512  # Constrained for production
+    ),
+    "mistral-small:24b": ModelCapabilities(
+        name="mistral-small:24b",
+        provider="ollama",
+        context_window=32768,  # 32k context window (base model)
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=25.0,
+        parameter_count="24B",
+        max_output_tokens=4096
+    ),
+    "mistral-small": ModelCapabilities(  # Alias for mistral-small:24b
+        name="mistral-small",
+        provider="ollama",
+        context_window=32768,  # 32k context window
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=25.0,
+        parameter_count="24B",
+        max_output_tokens=4096
+    ),
+    "qwen2.5:14b": ModelCapabilities(
+        name="qwen2.5:14b",
+        provider="ollama",
+        context_window=131072,  # 128k context window
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=30.0,
+        parameter_count="14B",
+        max_output_tokens=32768
+    ),
+    "qwen2.5": ModelCapabilities(  # Alias for qwen2.5:14b
+        name="qwen2.5",
+        provider="ollama",
+        context_window=131072,  # 128k context window
+        supports_json_mode=False,
+        supports_streaming=True,
+        estimated_tokens_per_second=30.0,
+        parameter_count="14B",
+        max_output_tokens=32768
+    ),
     "mixtral:8x7b": ModelCapabilities(
         name="mixtral:8x7b",
         provider="ollama",
@@ -256,7 +316,7 @@ def get_recommended_model(provider: str, parameter_limit: Optional[int] = None) 
         Recommended model name
     """
     if provider == "openai":
-        return "mistral:7b"
+        return "gpt-4o-mini"  # OpenAI lightweight model
     
     elif provider == "ollama":
         if parameter_limit is None:

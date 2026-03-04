@@ -122,20 +122,32 @@ echo "Configuration:"
 echo "  - Ollama URL: http://localhost:11434"
 echo "  - Status: Ready to serve models"
 echo ""
+
+# Step 6: Create production model
+echo "Step 6: Creating production model (mistral24b-16k)..."
+echo "This model uses mistral-small:24b base with optimized 16k constraints for document analysis..."
+if command -v ollama &> /dev/null && [ -f "resources/models/Modelfile-mistral24b-16k" ]; then
+    if ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k; then
+        echo "✓ mistral24b-16k model ready!"
+    else
+        echo "⚠ Failed to create mistral24b-16k. You can create it manually: ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k"
+    fi
+else
+    echo "⚠ Skipping model creation. Run this command manually when ready:"
+    echo "   ollama create mistral24b-16k -f resources/models/Modelfile-mistral24b-16k"
+fi
+echo ""
+
 echo "Next steps:"
-echo "  1. Pull a model when ready:"
-echo "     ollama pull <model-name>"
+echo "  1. The production model mistral24b-16k (24B, 16k context, optimized) is ready to use"
 echo ""
-echo "     Recommended models for different sizes:"
-echo "     - Small (1-2GB):  phi:2.7b, qwen2.5:3b"
-echo "     - Medium (4GB):   neural-chat:7b"
-echo "     - Large (8GB+):   mistral:7b, llama2:13b"
+echo "  2. Alternative models you can try:"
+echo "     ollama pull mistral:7b    # 7B, 8k context"
+echo "     ollama pull llama3:8b     # 8B, 8k context"
 echo ""
-echo "  2. Run a model:"
-echo "     ollama run <model-name>"
-echo ""
-echo "  3. Test with API:"
-echo "     curl -X POST http://localhost:11434/api/generate -d '{\"model\":\"<model-name>\",\"prompt\":\"Hello\"}'"
+echo "  3. Run PageIndex on your PDF:"
+echo "     export OLLAMA_MODEL=mistral24b-16k"
+echo "     python3 cli.py --pdf_path /path/to/document.pdf"
 echo ""
 echo "To stop Ollama:"
 echo "  - If using systemd: systemctl stop ollama"

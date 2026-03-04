@@ -6,6 +6,8 @@ import random
 import re
 import asyncio
 from .utils import *
+from .prompt_loader import format_prompt_by_use_case
+from .chunking_config import get_chunking_config_for_model
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,29 +17,23 @@ async def check_title_appearance(item, page_list, start_index=1, model=None):
     title=item['title']
     if 'physical_index' not in item or item['physical_index'] is None:
         return {'list_index': item.get('list_index'), 'answer': 'no', 'title':title, 'page_number': None}
-    
+    # Using Semaphore(3) for efficient parallel processing
+    semaphore = asyncio.Semaphore(3)
     
     page_number = item['physical_index']
-    page_text = page_list[page_number-start_index][0]
+    # Add boundary check to prevent index out of range
+    page_idx = page_number - start_index
+    if page_idx < 0 or page_idx >= len(page_list):
+        return {'list_index': item.get('list_index'), 'answer': 'no', 'title': title, 'page_number': None}
+    page_text = page_list[page_idx][0]
 
-    
-    prompt = f"""
-    Your job is to check if the given section appears or starts in the given page_text.
+    prompt = format_prompt_by_use_case(
+        "toc.check_title_appearance",
+        title=title,
+        page_text=page_text
+    )
 
-    Note: do fuzzy matching, ignore any space inconsistency in the page_text.
-
-    The given section title is {title}.
-    The given page_text is {page_text}.
-    
-    Reply format:
-    {{
-        
-        "thinking": <why do you think the section appears or starts in the page_text>
-        "answer": "yes or no" (yes if the section appears or starts in the page_text, no otherwise)
-    }}
-    Directly return the final JSON structure. Do not output anything else."""
-
-    response = await ChatGPT_API_async(model=model, prompt=prompt)
+    response = await Ollama_API_async(model=model, prompt=prompt)
     response = extract_json(response)
     if 'answer' in response:
         answer = response['answer']
@@ -47,25 +43,13 @@ async def check_title_appearance(item, page_list, start_index=1, model=None):
 
 
 async def check_title_appearance_in_start(title, page_text, model=None, logger=None):    
-    prompt = f"""
-    You will be given the current section title and the current page_text.
-    Your job is to check if the current section starts in the beginning of the given page_text.
-    If there are other contents before the current section title, then the current section does not start in the beginning of the given page_text.
-    If the current section title is the first content in the given page_text, then the current section starts in the beginning of the given page_text.
+    prompt = format_prompt_by_use_case(
+        "toc.check_title_start",
+        title=title,
+        page_text=page_text
+    )
 
-    Note: do fuzzy matching, ignore any space inconsistency in the page_text.
-
-    The given section title is {title}.
-    The given page_text is {page_text}.
-    
-    reply format:
-    {{
-        "thinking": <why do you think the section appears or starts in the page_text>
-        "start_begin": "yes or no" (yes if the section starts in the beginning of the page_text, no otherwise)
-    }}
-    Directly return the final JSON structure. Do not output anything else."""
-
-    response = await ChatGPT_API_async(model=model, prompt=prompt)
+    response = await Ollama_API_async(model=model, prompt=prompt)
     response = extract_json(response)
     if logger:
         logger.info(f"Response: {response}")
@@ -82,8 +66,8 @@ async def check_title_appearance_in_start_concurrent(structure, page_list, model
             item['appear_start'] = 'no'
 
     # only for items with valid physical_index
-    # Use a semaphore to limit concurrent requests to 1 (sequential) to avoid overwhelming Ollama
-    semaphore = asyncio.Semaphore(1)
+    # Use a semaphore to limit concurrent requests to 3 (controlled parallelism)
+    semaphore = asyncio.Semaphore(3)
     
     async def limited_check(item, page_text):
         async with semaphore:
@@ -93,7 +77,11 @@ async def check_title_appearance_in_start_concurrent(structure, page_list, model
     valid_items = []
     for item in structure:
         if item.get('physical_index') is not None:
-            page_text = page_list[item['physical_index'] - 1][0]
+            page_idx = item['physical_index'] - 1
+            if page_idx < 0 or page_idx >= len(page_list):
+                item['appear_start'] = 'no'
+                continue
+            page_text = page_list[page_idx][0]
             tasks.append(limited_check(item, page_text))
             valid_items.append(item)
 
@@ -110,91 +98,57 @@ async def check_title_appearance_in_start_concurrent(structure, page_list, model
 
 
 def toc_detector_single_page(content, model=None):
-    prompt = f"""
-    Your job is to detect if there is a table of content provided in the given text.
+    prompt = format_prompt_by_use_case(
+        "toc.detect_single_page",
+        text=content
+    )
 
-    Given text: {content}
-
-    return the following JSON format:
-    {{
-        "thinking": <why do you think there is a table of content in the given text>
-        "toc_detected": "<yes or no>",
-    }}
-
-    Directly return the final JSON structure. Do not output anything else.
-    Please note: abstract,summary, notation list, figure list, table list, etc. are not table of contents."""
-
-    response = ChatGPT_API(model=model, prompt=prompt)
+    response = Ollama_API(model=model, prompt=prompt)
     # print('response', response)
-    json_content = extract_json(response)    
-    return json_content['toc_detected']
+    json_content = extract_json(response)
+    return json_content.get('toc_detected', 'no')
 
 
 async def toc_detector_single_page_async(content, model=None):
     """Async version of TOC detector for parallel processing"""
-    prompt = f"""
-    Your job is to detect if there is a table of content provided in the given text.
+    prompt = format_prompt_by_use_case(
+        "toc.detect_single_page",
+        text=content
+    )
 
-    Given text: {content}
-
-    return the following JSON format:
-    {{
-        "thinking": <why do you think there is a table of content in the given text>
-        "toc_detected": "<yes or no>",
-    }}
-
-    Directly return the final JSON structure. Do not output anything else.
-    Please note: abstract,summary, notation list, figure list, table list, etc. are not table of contents."""
-
-    response = await ChatGPT_API_async(model=model, prompt=prompt)
+    response = await Ollama_API_async(model=model, prompt=prompt)
     json_content = extract_json(response)
     return json_content.get('toc_detected', 'no')
 
 
 def check_if_toc_extraction_is_complete(content, toc, model=None):
-    prompt = f"""
-    You are given a partial document  and a  table of contents.
-    Your job is to check if the  table of contents is complete, which it contains all the main sections in the partial document.
-
-    Reply format:
-    {{
-        "thinking": <why do you think the table of contents is complete or not>
-        "completed": "yes" or "no"
-    }}
-    Directly return the final JSON structure. Do not output anything else."""
-
-    prompt = prompt + '\n Document:\n' + content + '\n Table of contents:\n' + toc
-    response = ChatGPT_API(model=model, prompt=prompt)
+    prompt = format_prompt_by_use_case(
+        "toc.check_extraction_complete",
+        content=content,
+        toc=toc
+    )
+    response = Ollama_API(model=model, prompt=prompt)
     json_content = extract_json(response)
-    return json_content['completed']
+    return json_content.get('completed', 'no')
 
 
 def check_if_toc_transformation_is_complete(content, toc, model=None):
-    prompt = f"""
-    You are given a raw table of contents and a  table of contents.
-    Your job is to check if the  table of contents is complete.
-
-    Reply format:
-    {{
-        "thinking": <why do you think the cleaned table of contents is complete or not>
-        "completed": "yes" or "no"
-    }}
-    Directly return the final JSON structure. Do not output anything else."""
-
-    prompt = prompt + '\n Raw Table of contents:\n' + content + '\n Cleaned Table of contents:\n' + toc
-    response = ChatGPT_API(model=model, prompt=prompt)
+    prompt = format_prompt_by_use_case(
+        "toc.check_transformation_complete",
+        content=content,
+        toc=toc
+    )
+    response = Ollama_API(model=model, prompt=prompt)
     json_content = extract_json(response)
-    return json_content['completed']
+    return json_content.get('completed', 'no')
 
 def extract_toc_content(content, model=None):
-    prompt = f"""
-    Your job is to extract the full table of contents from the given text, replace ... with :
+    prompt = format_prompt_by_use_case(
+        "toc.extract_content_init",
+        content=content
+    )
 
-    Given text: {content}
-
-    Directly return the full table of contents content. Do not output anything else."""
-
-    response, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt)
+    response, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt)
     
     if_complete = check_if_toc_transformation_is_complete(content, response, model)
     if if_complete == "yes" and finish_reason == "finished":
@@ -204,46 +158,39 @@ def extract_toc_content(content, model=None):
         {"role": "user", "content": prompt}, 
         {"role": "assistant", "content": response},    
     ]
-    prompt = f"""please continue the generation of table of contents , directly output the remaining part of the structure"""
-    new_response, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt, chat_history=chat_history)
+    prompt = format_prompt_by_use_case("toc.extract_content_continue")
+    new_response, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt, chat_history=chat_history)
     response = response + new_response
     if_complete = check_if_toc_transformation_is_complete(content, response, model)
-    
+
+    max_retries = 5
+    retries = 0
     while not (if_complete == "yes" and finish_reason == "finished"):
         chat_history = [
-            {"role": "user", "content": prompt}, 
-            {"role": "assistant", "content": response},    
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response},
         ]
-        prompt = f"""please continue the generation of table of contents , directly output the remaining part of the structure"""
-        new_response, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt, chat_history=chat_history)
+        prompt = format_prompt_by_use_case("toc.extract_content_continue")
+        new_response, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt, chat_history=chat_history)
         response = response + new_response
         if_complete = check_if_toc_transformation_is_complete(content, response, model)
-        
-        # Optional: Add a maximum retry limit to prevent infinite loops
-        if len(chat_history) > 5:  # Arbitrary limit of 10 attempts
+
+        retries += 1
+        if retries >= max_retries:
             raise Exception('Failed to complete table of contents after maximum retries')
-    
+
     return response
 
 def detect_page_index(toc_content, model=None):
     print('start detect_page_index')
-    prompt = f"""
-    You will be given a table of contents.
+    prompt = format_prompt_by_use_case(
+        "toc.detect_page_index",
+        toc_content=toc_content
+    )
 
-    Your job is to detect if there are page numbers/indices given within the table of contents.
-
-    Given text: {toc_content}
-
-    Reply format:
-    {{
-        "thinking": <why do you think there are page numbers/indices given within the table of contents>
-        "page_index_given_in_toc": "<yes or no>"
-    }}
-    Directly return the final JSON structure. Do not output anything else."""
-
-    response = ChatGPT_API(model=model, prompt=prompt)
+    response = Ollama_API(model=model, prompt=prompt)
     json_content = extract_json(response)
-    return json_content['page_index_given_in_toc']
+    return json_content.get('page_index_given_in_toc', 'no')
 
 def toc_extractor(page_list, toc_page_list, model):
     def transform_dots_to_colon(text):
@@ -268,93 +215,185 @@ def toc_extractor(page_list, toc_page_list, model):
 
 def toc_index_extractor(toc, content, model=None):
     print('start toc_index_extractor')
-    toc_extractor_prompt = """
-    You are given a table of contents in a json format and several pages of a document, your job is to add the physical_index to the table of contents in the json format.
+    from pageindex.prompt_loader import format_prompt_by_use_case
+    
+    prompt = format_prompt_by_use_case('toc.index_extractor', toc=str(toc), content=content)
+    response = Ollama_API(model=model, prompt=prompt)
+    json_content = extract_json(response)
+    return json_content if isinstance(json_content, list) else []
 
-    The provided pages contains tags like <physical_index_X> and <physical_index_X> to indicate the physical location of the page X.
 
-    The structure variable is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
 
-    The response should be in the following JSON format: 
-    [
-        {
-            "structure": <structure index, "x.x.x" or None> (string),
-            "title": <title of the section>,
-            "physical_index": "<physical_index_X>" (keep the format)
-        },
-        ...
-    ]
+def _toc_transformer_single(toc_content, model=None):
+    """Transform a single TOC chunk that fits within token limits"""
+    from pageindex.prompt_loader import format_prompt_by_use_case
 
-    Only add the physical_index to the sections that are in the provided pages.
-    If the section is not in the provided pages, do not add the physical_index to it.
-    Directly return the final JSON structure. Do not output anything else."""
+    def _parse_toc_payload(payload):
+        parsed = extract_json(payload)
+        if isinstance(parsed, dict):
+            return convert_page_to_int(parsed.get('table_of_contents', []))
+        if isinstance(parsed, list):
+            return convert_page_to_int(parsed)
+        return []
 
-    prompt = toc_extractor_prompt + '\nTable of contents:\n' + str(toc) + '\nDocument pages:\n' + content
-    response = ChatGPT_API(model=model, prompt=prompt)
-    json_content = extract_json(response)    
-    return json_content
+    prompt = format_prompt_by_use_case('toc.transformer_init', toc_content=toc_content)
+    last_complete, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt)
 
+    initial_items = _parse_toc_payload(last_complete)
+    if initial_items:
+        return initial_items
+
+    if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
+
+    if if_complete == "yes" and finish_reason == "finished":
+        return _parse_toc_payload(last_complete)
+
+    last_complete = get_json_content(last_complete)
+    loop_count = 0
+    while not (if_complete == "yes" and finish_reason == "finished"):
+        loop_count += 1
+
+        if loop_count > 5:
+            break
+
+        position = last_complete.rfind('}')
+        if position != -1:
+            last_complete = last_complete[:position+1]
+
+        prompt = format_prompt_by_use_case('toc.transformer_continue', toc_content=toc_content, last_complete=last_complete)
+        new_complete, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt)
+
+        new_complete_json = get_json_content(new_complete)
+        if new_complete_json:
+            last_complete = last_complete + new_complete_json
+
+        recovered_items = _parse_toc_payload(last_complete)
+        if recovered_items and (if_complete == "yes" or loop_count >= 2):
+            return recovered_items
+
+        if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
+
+    return _parse_toc_payload(last_complete)
+
+
+def _split_toc_by_chapters(toc_content, max_chunk_chars=None):
+    """Split TOC into chunks, trying to break at chapter boundaries.
+    
+    Args:
+        toc_content: Raw TOC text to split
+        max_chunk_chars: Maximum chunk size. If None, uses 8000 (default)
+    """
+    if max_chunk_chars is None:
+        max_chunk_chars = 8000
+    
+    if len(toc_content) <= max_chunk_chars:
+        return [toc_content]
+
+    chunks = []
+    lines = toc_content.split('\n')
+    current_chunk = []
+    current_length = 0
+
+    for i, line in enumerate(lines):
+        line_with_newline = line + '\n'
+        line_length = len(line_with_newline)
+
+        # Check if this line starts a new major chapter
+        # Match patterns like "1\n", "2  Introduction", "Chapter 1", etc.
+        is_chapter_start = bool(re.match(r'^(\d+)\s+[A-Z]', line.strip())) or bool(re.match(r'^\d+\s*$', line.strip()))
+
+        # Force split if we're over limit and at a chapter boundary
+        if current_length + line_length > max_chunk_chars and current_chunk and is_chapter_start:
+            chunk_text = ''.join(current_chunk)
+            chunks.append(chunk_text)
+            print(f"[TOC Split] Chunk {len(chunks)}: {len(chunk_text)} chars, starts: {chunk_text[:60]}")
+            current_chunk = [line_with_newline]
+            current_length = line_length
+        else:
+            current_chunk.append(line_with_newline)
+            current_length += line_length
+
+    if current_chunk:
+        chunk_text = ''.join(current_chunk)
+        chunks.append(chunk_text)
+        print(f"[TOC Split] Chunk {len(chunks)} (final): {len(chunk_text)} chars, starts: {chunk_text[:60]}")
+
+    return chunks
 
 
 def toc_transformer(toc_content, model=None):
     print('start toc_transformer')
-    init_prompt = """
-    You are given a table of contents, You job is to transform the whole table of content into a JSON format included table_of_contents.
+    from pageindex.prompt_loader import format_prompt_by_use_case
 
-    structure is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
-
-    The response should be in the following JSON format: 
-    {
-    table_of_contents: [
-        {
-            "structure": <structure index, "x.x.x" or None> (string),
-            "title": <title of the section>,
-            "page": <page number or None>,
-        },
-        ...
-        ],
-    }
-    You should transform the full table of contents in one go.
-    Directly return the final JSON structure, do not output anything else. """
-
-    prompt = init_prompt + '\n Given table of contents\n:' + toc_content
-    last_complete, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt)
-    if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
-    if if_complete == "yes" and finish_reason == "finished":
-        last_complete = extract_json(last_complete)
-        cleaned_response=convert_page_to_int(last_complete['table_of_contents'])
-        return cleaned_response
+    # Get adaptive chunking config based on model
+    config = get_chunking_config_for_model(model)
+    char_limit = config.toc_single_pass_threshold
     
-    last_complete = get_json_content(last_complete)
-    while not (if_complete == "yes" and finish_reason == "finished"):
-        position = last_complete.rfind('}')
-        if position != -1:
-            last_complete = last_complete[:position+2]
-        prompt = f"""
-        Your task is to continue the table of contents json structure, directly output the remaining part of the json structure.
-        The response should be in the following JSON format: 
+    # Check if TOC is too large for single-pass transformation
+    if len(toc_content) <= char_limit:
+        print(f"[TOC] Single-pass transformation ({len(toc_content)} chars)")
+        last_complete, finish_reason = Ollama_API_with_finish_reason(
+            model=model,
+            prompt=format_prompt_by_use_case('toc.transformer_init', toc_content=toc_content)
+        )
+        print(f"[TOC] Initial response: {len(last_complete)} chars, finish_reason={finish_reason}")
 
-        The raw table of contents json structure is:
-        {toc_content}
+        parsed = extract_json(last_complete)
+        if isinstance(parsed, dict):
+            parsed_items = convert_page_to_int(parsed.get('table_of_contents', []))
+            if parsed_items:
+                print(f"[TOC] Single-pass parse produced {len(parsed_items)} items")
+                return parsed_items
+        elif isinstance(parsed, list):
+            parsed_items = convert_page_to_int(parsed)
+            if parsed_items:
+                print(f"[TOC] Single-pass parse produced {len(parsed_items)} items")
+                return parsed_items
 
-        The incomplete transformed table of contents json structure is:
-        {last_complete}
+        # If parse is empty and model says finished, return empty directly.
+        # Otherwise fall through to chunked recovery path.
+        if finish_reason == "finished":
+            return []
 
-        Please continue the json structure, directly output the remaining part of the json structure."""
+    # TOC is too large - use chunked transformation
+    print(f"[TOC] Large TOC detected ({len(toc_content)} chars), using chunked transformation")
+    chunks = _split_toc_by_chapters(toc_content, max_chunk_chars=config.toc_chunk_size)
+    print(f"[TOC] Split into {len(chunks)} chunks (config: {config})")
 
-        new_complete, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt)
+    all_items = []
+    for i, chunk in enumerate(chunks):
+        print(f"[TOC] Processing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...")
+        try:
+            chunk_items = _toc_transformer_single(chunk, model=model)
+            if chunk_items:
+                print(f"[TOC] Chunk {i+1} yielded {len(chunk_items)} items, first: {chunk_items[0].get('title', 'N/A')[:50]}, last: {chunk_items[-1].get('title', 'N/A')[:50]}")
+                all_items.extend(chunk_items)
+            else:
+                print(f"[TOC] Chunk {i+1} yielded NO items (empty result)")
+        except Exception as e:
+            print(f"[TOC] Chunk {i+1} failed: {str(e)[:200]}")
+            import traceback
+            traceback.print_exc()
+            continue
 
-        if new_complete.startswith('```json'):
-            new_complete =  get_json_content(new_complete)
-            last_complete = last_complete+new_complete
+    print(f"[TOC] Total items collected: {len(all_items)}")
 
-        if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
-        
+    # Deduplicate items with same title and page
+    seen = set()
+    deduplicated = []
+    for item in all_items:
+        title = str(item.get('title', '')).strip()
+        page = item.get('page')
+        key = (title.lower(), page)
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(item)
 
-    last_complete = json.loads(last_complete)
-
-    cleaned_response=convert_page_to_int(last_complete['table_of_contents'])
-    return cleaned_response
+    print(f"[TOC] ✓ Completed with {len(deduplicated)} items (from {len(all_items)} raw items)")
+    if deduplicated:
+        print(f"[TOC] First item: {deduplicated[0]}")
+        print(f"[TOC] Last item: {deduplicated[-1]}")
+    return deduplicated
     
 
 
@@ -365,10 +404,11 @@ def find_toc_pages(start_page_index, page_list, opt, logger=None):
     last_page_is_yes = False
     toc_page_list = []
     i = start_page_index
+    scan_window = max(opt.toc_check_page_num, 30)
     
     while i < len(page_list):
         # Only check beyond max_pages if we're still finding TOC pages
-        if i >= opt.toc_check_page_num and not last_page_is_yes:
+        if i >= start_page_index + scan_window and not last_page_is_yes:
             break
         detected_result = toc_detector_single_page(page_list[i][0],model=opt.model)
         if detected_result == 'yes':
@@ -393,7 +433,8 @@ async def find_toc_pages_async(start_page_index, page_list, opt, logger=None):
     print('start find_toc_pages (parallel processing)')
     
     # Determine how many pages to check
-    max_check = min(opt.toc_check_page_num, len(page_list) - start_page_index)
+    scan_window = max(opt.toc_check_page_num, 30)
+    max_check = min(scan_window, len(page_list) - start_page_index)
     
     if max_check <= 0:
         if logger:
@@ -401,7 +442,7 @@ async def find_toc_pages_async(start_page_index, page_list, opt, logger=None):
         return []
     
     # Create tasks for checking pages with semaphore to limit concurrency
-    semaphore = asyncio.Semaphore(2)  # Limit to 2 concurrent requests to Ollama
+    semaphore = asyncio.Semaphore(3)
     
     async def limited_toc_check(i, content):
         async with semaphore:
@@ -410,8 +451,8 @@ async def find_toc_pages_async(start_page_index, page_list, opt, logger=None):
     tasks = []
     page_indices = []
     for i in range(start_page_index, start_page_index + max_check):
-        # Truncate content to first 2000 chars for faster processing
-        content = page_list[i][0][:2000] if len(page_list[i][0]) > 2000 else page_list[i][0]
+        # Use a larger prefix to improve TOC recall on long front-matter pages
+        content = page_list[i][0][:4000] if len(page_list[i][0]) > 4000 else page_list[i][0]
         tasks.append(limited_toc_check(i, content))
         page_indices.append(i)
     
@@ -573,8 +614,11 @@ def add_page_number_to_toc(part, structure, model=None):
     Directly return the final JSON structure. Do not output anything else."""
 
     prompt = fill_prompt_seq + f"\n\nCurrent Partial Document:\n{part}\n\nGiven Structure\n{json.dumps(structure, indent=2)}\n"
-    current_json_raw = ChatGPT_API(model=model, prompt=prompt)
+    current_json_raw = Ollama_API(model=model, prompt=prompt)
     json_result = extract_json(current_json_raw)
+
+    if not isinstance(json_result, list) or not json_result:
+        return structure
     
     for item in json_result:
         if 'start' in item:
@@ -595,35 +639,14 @@ def remove_first_physical_index_section(text):
     return text
 
 ### add verify completeness
-def generate_toc_continue(toc_content, part, model="mistral:7b"):
+def generate_toc_continue(toc_content, part, model="mistral24b-16k"):
     print('start generate_toc_continue')
-    prompt = """
-    You are an expert in extracting hierarchical tree structure.
-    You are given a tree structure of the previous part and the text of the current part.
-    Your task is to continue the tree structure from the previous part to include the current part.
-
-    The structure variable is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
-
-    For the title, you need to extract the original title from the text, only fix the space inconsistency.
-
-    The provided text contains tags like <physical_index_X> and <physical_index_X> to indicate the start and end of page X. \
-    
-    For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
-
-    The response should be in the following format. 
-        [
-            {
-                "structure": <structure index, "x.x.x"> (string),
-                "title": <title of the section, keep the original title>,
-                "physical_index": "<physical_index_X> (keep the format)"
-            },
-            ...
-        ]    
-
-    Directly return the additional part of the final JSON structure. Do not output anything else."""
-
-    prompt = prompt + '\nGiven text\n:' + part + '\nPrevious tree structure\n:' + json.dumps(toc_content, indent=2)
-    response, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt)
+    prompt = format_prompt_by_use_case(
+        "toc.generate_continue",
+        part=part,
+        toc_content=json.dumps(toc_content, indent=2)
+    )
+    response, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt)
     if finish_reason == 'finished':
         return extract_json(response)
     else:
@@ -632,39 +655,57 @@ def generate_toc_continue(toc_content, part, model="mistral:7b"):
 ### add verify completeness
 def generate_toc_init(part, model=None):
     print('start generate_toc_init')
-    prompt = """
-    You are an expert in extracting hierarchical tree structure, your task is to generate the tree structure of the document.
-
-    The structure variable is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
-
-    For the title, you need to extract the original title from the text, only fix the space inconsistency.
-
-    The provided text contains tags like <physical_index_X> and <physical_index_X> to indicate the start and end of page X. 
-
-    For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
-
-    The response should be in the following format. 
-        [
-            {{
-                "structure": <structure index, "x.x.x"> (string),
-                "title": <title of the section, keep the original title>,
-                "physical_index": "<physical_index_X> (keep the format)"
-            }},
-            
-        ],
-
-
-    Directly return the final JSON structure. Do not output anything else."""
-
-    prompt = prompt + '\nGiven text\n:' + part
-    response, finish_reason = ChatGPT_API_with_finish_reason(model=model, prompt=prompt)
+    prompt = format_prompt_by_use_case(
+        "toc.generate_init",
+        part=part
+    )
+    response, finish_reason = Ollama_API_with_finish_reason(model=model, prompt=prompt)
 
     if finish_reason == 'finished':
          return extract_json(response)
     else:
         raise Exception(f'finish reason: {finish_reason}')
 
-def process_no_toc(page_list, start_index=1, model=None, logger=None):
+def create_simple_page_structure(page_list, start_index=1, pages_per_section=5):
+    """
+    Fallback structure creator for PDFs without TOC.
+    Creates simple page-based sections instead of trying to detect structure.
+    
+    Args:
+        page_list: List of pages
+        start_index: Starting page index (default: 1)
+        pages_per_section: Number of pages per section (default: 5)
+    
+    Returns:
+        List of simple TOC entries grouping pages into sections
+    """
+    toc_structure = []
+    num_pages = len(page_list)
+    
+    for section_start in range(start_index, start_index + num_pages, pages_per_section):
+        section_end = min(section_start + pages_per_section - 1, start_index + num_pages - 1)
+        
+        if section_start == section_end:
+            title = f"Page {section_start}"
+        else:
+            title = f"Pages {section_start}-{section_end}"
+        
+        toc_structure.append({
+            'title': title,
+            'physical_index': section_start
+        })
+    
+    return toc_structure
+
+def _normalize_toc_items(items):
+    if isinstance(items, dict):
+        return [items] if items else []
+    if isinstance(items, list):
+        return items
+    return []
+
+
+def _process_no_toc_single_pass(page_list, start_index=1, model=None, logger=None):
     page_contents=[]
     token_lengths=[]
     for page_index in range(start_index, start_index+len(page_list)):
@@ -672,18 +713,149 @@ def process_no_toc(page_list, start_index=1, model=None, logger=None):
         page_contents.append(page_text)
         token_lengths.append(count_tokens(page_text, model))
     group_texts = page_list_to_group_text(page_contents, token_lengths)
-    logger.info(f'len(group_texts): {len(group_texts)}')
+    if logger:
+        logger.info(f'len(group_texts): {len(group_texts)}')
 
-    toc_with_page_number= generate_toc_init(group_texts[0], model)
+    toc_with_page_number = generate_toc_init(group_texts[0], model)
+    toc_with_page_number = _normalize_toc_items(toc_with_page_number)
+
     for group_text in group_texts[1:]:
-        toc_with_page_number_additional = generate_toc_continue(toc_with_page_number, group_text, model)    
-        toc_with_page_number.extend(toc_with_page_number_additional)
-    logger.info(f'generate_toc: {toc_with_page_number}')
+        toc_with_page_number_additional = generate_toc_continue(toc_with_page_number, group_text, model)
+        toc_with_page_number_additional = _normalize_toc_items(toc_with_page_number_additional)
+        if toc_with_page_number_additional:
+            toc_with_page_number.extend(toc_with_page_number_additional)
+
+    if logger:
+        logger.info(f'generate_toc: {toc_with_page_number}')
 
     toc_with_page_number = convert_physical_index_to_int(toc_with_page_number)
-    logger.info(f'convert_physical_index_to_int: {toc_with_page_number}')
+    if logger:
+        logger.info(f'convert_physical_index_to_int: {toc_with_page_number}')
 
     return toc_with_page_number
+
+
+def _should_use_hierarchical_no_toc(page_list, opt=None, model=None):
+    """Determine if hierarchical chunking should be used for large no-TOC documents.
+    
+    Args:
+        page_list: List of (text, tokens) tuples
+        opt: Optional config object
+        model: Model name for adaptive thresholds
+    """
+    # Get adaptive config
+    config = get_chunking_config_for_model(model)
+    
+    total_pages = len(page_list)
+    total_tokens = sum(page[1] for page in page_list)
+
+    if total_pages >= config.no_toc_page_threshold:
+        print(f"[Hierarchical] Triggered by page count: {total_pages} >= {config.no_toc_page_threshold}")
+        return True
+
+    token_threshold = config.no_toc_token_threshold
+    if opt and getattr(opt, 'max_token_num_each_node', None):
+        token_threshold = max(token_threshold, int(opt.max_token_num_each_node) * 4)
+
+    if total_tokens >= token_threshold:
+        print(f"[Hierarchical] Triggered by token count: {total_tokens} >= {token_threshold}")
+        return True
+    
+    return False
+
+
+def process_no_toc_hierarchical(page_list, start_index=1, model=None, logger=None, chunk_page_size=None, overlap_pages=None):
+    """Process large no-TOC documents using hierarchical chunking.
+    
+    Args:
+        page_list: List of (text, tokens) tuples
+        start_index: Starting page number
+        model: Model name (used for adaptive config)
+        logger: Optional logger
+        chunk_page_size: Pages per chunk (uses model's config if None)
+        overlap_pages: Overlap between chunks (uses model's config if None)
+    """
+    # Get adaptive config
+    config = get_chunking_config_for_model(model)
+    if chunk_page_size is None:
+        chunk_page_size = config.no_toc_chunk_size
+    if overlap_pages is None:
+        overlap_pages = config.no_toc_overlap_pages
+    
+    total_pages = len(page_list)
+    if total_pages <= chunk_page_size:
+        return _process_no_toc_single_pass(page_list, start_index=start_index, model=model, logger=logger)
+
+    if logger:
+        logger.info({
+            'mode': 'process_no_toc_hierarchical',
+            'total_pages': total_pages,
+            'chunk_page_size': chunk_page_size,
+            'overlap_pages': overlap_pages
+        })
+
+    merged_items = []
+    step = max(1, chunk_page_size - overlap_pages)
+
+    for local_chunk_start in range(0, total_pages, step):
+        local_chunk_end = min(local_chunk_start + chunk_page_size, total_pages)
+        chunk_pages = page_list[local_chunk_start:local_chunk_end]
+        chunk_start_index = start_index + local_chunk_start
+
+        if logger:
+            logger.info({
+                'hier_chunk_start': chunk_start_index,
+                'hier_chunk_end': chunk_start_index + len(chunk_pages) - 1,
+                'hier_chunk_pages': len(chunk_pages)
+            })
+
+        try:
+            chunk_items = _process_no_toc_single_pass(
+                chunk_pages,
+                start_index=chunk_start_index,
+                model=model,
+                logger=logger
+            )
+        except Exception as exc:
+            if logger:
+                logger.info({
+                    'hier_chunk_error': str(exc),
+                    'chunk_start_index': chunk_start_index
+                })
+            chunk_items = create_simple_page_structure(chunk_pages, start_index=chunk_start_index, pages_per_section=10)
+
+        merged_items.extend(_normalize_toc_items(chunk_items))
+
+    deduped_items = []
+    seen = set()
+    for item in sorted(merged_items, key=lambda x: (x.get('physical_index') is None, x.get('physical_index') or 10**9, str(x.get('title', '')))):
+        title = re.sub(r'\s+', ' ', str(item.get('title', '')).strip().lower())
+        key = (item.get('physical_index'), title)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_items.append(item)
+
+    if not deduped_items:
+        return create_simple_page_structure(page_list, start_index=start_index)
+
+    return deduped_items
+
+
+def process_no_toc(page_list, start_index=1, model=None, logger=None, opt=None):
+    """Process no-TOC documents, automatically choosing single-pass or hierarchical.
+    
+    Args:
+        page_list: List of (text, tokens) tuples
+        start_index: Starting page number
+        model: Model name (used for adaptive thresholds)
+        logger: Optional logger
+        opt: Optional config object
+    """
+    if _should_use_hierarchical_no_toc(page_list, opt=opt, model=model):
+        print('start process_no_toc_hierarchical')
+        return process_no_toc_hierarchical(page_list, start_index=start_index, model=model, logger=logger)
+    return _process_no_toc_single_pass(page_list, start_index=start_index, model=model, logger=logger)
 
 def process_toc_no_page_numbers(toc_content, toc_page_list, page_list,  start_index=1, model=None, logger=None):
     page_contents=[]
@@ -705,6 +877,14 @@ def process_toc_no_page_numbers(toc_content, toc_page_list, page_list,  start_in
 
     toc_with_page_number = convert_physical_index_to_int(toc_with_page_number)
     logger.info(f'convert_physical_index_to_int: {toc_with_page_number}')
+
+    resolved_count = 0
+    if isinstance(toc_with_page_number, list):
+        resolved_count = sum(1 for item in toc_with_page_number if isinstance(item, dict) and item.get('physical_index') is not None)
+
+    if resolved_count == 0:
+        logger.info('No physical indices resolved from TOC-without-page-numbers flow; using simple page structure fallback')
+        return create_simple_page_structure(page_list, start_index=start_index)
 
     return toc_with_page_number
 
@@ -775,7 +955,7 @@ def process_none_page_numbers(toc_items, page_list, start_index=1, model=None):
             item_copy = copy.deepcopy(item)
             del item_copy['page']
             result = add_page_number_to_toc(page_contents, item_copy, model)
-            if isinstance(result[0]['physical_index'], str) and result[0]['physical_index'].startswith('<physical_index'):
+            if result and isinstance(result[0]['physical_index'], str) and result[0]['physical_index'].startswith('<physical_index'):
                 item['physical_index'] = int(result[0]['physical_index'].split('_')[-1].rstrip('>').strip())
                 del item['page']
     
@@ -800,8 +980,7 @@ def check_toc(page_list, opt=None):
             current_start_index = toc_page_list[-1] + 1
             
             while (toc_json['page_index_given_in_toc'] == 'no' and 
-                   current_start_index < len(page_list) and 
-                   current_start_index < opt.toc_check_page_num):
+                   current_start_index < len(page_list)):
                 
                 additional_toc_pages = find_toc_pages(
                     start_page_index=current_start_index,
@@ -840,8 +1019,7 @@ async def check_toc_async(page_list, opt=None):
             current_start_index = toc_page_list[-1] + 1
             
             while (toc_json['page_index_given_in_toc'] == 'no' and 
-                   current_start_index < len(page_list) and 
-                   current_start_index < opt.toc_check_page_num):
+                   current_start_index < len(page_list)):
                 
                 additional_toc_pages = await find_toc_pages_async(
                     start_page_index=current_start_index,
@@ -868,23 +1046,14 @@ async def check_toc_async(page_list, opt=None):
 
 
 ################### fix incorrect toc #########################################################
-def single_toc_item_index_fixer(section_title, content, model="mistral:7b"):
-    toc_extractor_prompt = """
-    You are given a section title and several pages of a document, your job is to find the physical index of the start page of the section in the partial document.
-
-    The provided pages contains tags like <physical_index_X> and <physical_index_X> to indicate the physical location of the page X.
-
-    Reply in a JSON format:
-    {
-        "thinking": <explain which page, started and closed by <physical_index_X>, contains the start of this section>,
-        "physical_index": "<physical_index_X>" (keep the format)
-    }
-    Directly return the final JSON structure. Do not output anything else."""
-
-    prompt = toc_extractor_prompt + '\nSection Title:\n' + str(section_title) + '\nDocument pages:\n' + content
-    response = ChatGPT_API(model=model, prompt=prompt)
-    json_content = extract_json(response)    
-    return convert_physical_index_to_int(json_content['physical_index'])
+def single_toc_item_index_fixer(section_title, content, model="mistral24b-16k"):
+    from pageindex.prompt_loader import format_prompt_by_use_case
+    
+    prompt = format_prompt_by_use_case('toc.item_index_fixer', section_title=str(section_title), content=content)
+    response = Ollama_API(model=model, prompt=prompt)
+    json_content = extract_json(response)
+    physical_index = json_content.get('physical_index') if isinstance(json_content, dict) else None
+    return convert_physical_index_to_int(physical_index) if physical_index else None
 
 
 
@@ -966,7 +1135,7 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
         }
 
     # Process incorrect items with limited concurrency
-    semaphore = asyncio.Semaphore(1)  # Process one at a time to avoid overwhelming Ollama
+    semaphore = asyncio.Semaphore(3)
     
     async def limited_process(item):
         async with semaphore:
@@ -1043,9 +1212,14 @@ async def verify_toc(page_list, list_result, start_index=1, N=None, model=None):
             last_physical_index = item['physical_index']
             break
     
-    # Early return if we don't have valid physical indices
-    if last_physical_index is None or last_physical_index < len(page_list)/2:
+    # Early return only when we have no valid physical indices at all
+    if last_physical_index is None:
         return 0, []
+
+    # Keep verification alive even if the last index is in the first half of the document.
+    # This avoids forcing a zero-accuracy fallback for partially valid TOCs.
+    if last_physical_index < len(page_list) / 2:
+        print(f"⚠️ verify_toc: last physical index {last_physical_index} is in first half of document; continuing verification")
     
     # Determine which items to check
     if N is None:
@@ -1065,6 +1239,9 @@ async def verify_toc(page_list, list_result, start_index=1, N=None, model=None):
             item_with_index = item.copy()
             item_with_index['list_index'] = idx  # Add the original index in list_result
             indexed_sample_list.append(item_with_index)
+
+    if not indexed_sample_list:
+        return 0, []
 
     # Run checks concurrently
     tasks = [
@@ -1102,7 +1279,7 @@ async def meta_processor(page_list, mode=None, toc_content=None, toc_page_list=N
     elif mode == 'process_toc_no_page_numbers':
         toc_with_page_number = process_toc_no_page_numbers(toc_content, toc_page_list, page_list, model=opt.model, logger=logger)
     else:
-        toc_with_page_number = process_no_toc(page_list, start_index=start_index, model=opt.model, logger=logger)
+        toc_with_page_number = process_no_toc(page_list, start_index=start_index, model=opt.model, logger=logger, opt=opt)
             
     toc_with_page_number = [item for item in toc_with_page_number if item.get('physical_index') is not None] 
     
@@ -1131,7 +1308,11 @@ async def meta_processor(page_list, mode=None, toc_content=None, toc_page_list=N
         elif mode == 'process_toc_no_page_numbers':
             return await meta_processor(page_list, mode='process_no_toc', start_index=start_index, opt=opt, logger=logger)
         else:
-            raise Exception('Processing failed')
+            # Final fallback: Auto-generated TOC failed verification
+            # Create simple page-based structure instead of raising exception
+            print(f'⚠️  Auto-generated TOC has low accuracy ({accuracy*100:.1f}%). Using simple page-based structure.')
+            logger.info({'fallback_reason': 'low_accuracy', 'accuracy': accuracy})
+            return create_simple_page_structure(page_list, start_index=start_index)
         
  
 async def process_large_node_recursively(node, page_list, opt=None, logger=None):
@@ -1167,13 +1348,17 @@ async def tree_parser(page_list, opt, doc=None, logger=None):
     check_toc_result = await check_toc_async(page_list, opt)
     logger.info(check_toc_result)
 
-    if check_toc_result.get("toc_content") and check_toc_result["toc_content"].strip() and check_toc_result["page_index_given_in_toc"] == "yes":
+    toc_content = check_toc_result.get("toc_content")
+    page_index_in_toc = check_toc_result.get("page_index_given_in_toc")
+
+    if toc_content and toc_content.strip():
+        processing_mode = 'process_toc_with_page_numbers' if page_index_in_toc == "yes" else 'process_toc_no_page_numbers'
         toc_with_page_number = await meta_processor(
-            page_list, 
-            mode='process_toc_with_page_numbers', 
-            start_index=1, 
-            toc_content=check_toc_result['toc_content'], 
-            toc_page_list=check_toc_result['toc_page_list'], 
+            page_list,
+            mode=processing_mode,
+            start_index=1,
+            toc_content=toc_content,
+            toc_page_list=check_toc_result.get('toc_page_list', []),
             opt=opt,
             logger=logger)
     else:

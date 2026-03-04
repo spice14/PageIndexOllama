@@ -158,5 +158,6 @@ test_ollama_speed.py
 test_provider_routing.py
 verify_all_17_targets.py
 test_parallel_processing.py
-tests/reports
 tests/results
+tests/reports/
+run_comprehensive_e2e.log

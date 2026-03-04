@@ -17,7 +17,7 @@ import logging
 sys.path.insert(0, '/workspace/PageIndexOllama')
 
 from pageindex import page_index_main, config
-from pageindex.utils import ChatGPT_API_async
+from pageindex.utils import Ollama_API_async
 import traceback
 
 # Configure logging
@@ -113,71 +113,106 @@ class E2ETestRunner:
             query: Search query
             
         Returns:
-            Dict with node_list and thinking process
+            Dict with node_ids and thinking process
         """
+        import sys
+        sys.path.insert(0, '/workspace/PageIndexOllama')
+        from pageindex.prompt_loader import format_prompt_by_use_case
+        import json
+        
         logger.info(f"Starting tree search for query: {query}")
         
         # Remove text from tree for initial search
         tree_without_text = self._remove_text_from_tree(tree)
         
-        search_prompt = f"""You are an intelligent document researcher. You are given a question and a tree structure of a document.
-Each node contains:
-- node_id: unique identifier
-- title: section title
-- summary: brief summary of content
-- children: nested subsections
-
-Your task: Find ALL nodes that might contain the answer to the question. Think carefully about which sections would be relevant.
-
-Question: {query}
-
-Document tree (showing node_id, title, and summary):
-{json.dumps(tree_without_text, indent=2)}
-
-IMPORTANT: Return ONLY valid JSON in this format:
-{{
-    "thinking": "Your reasoning about which sections are relevant",
-    "node_list": ["node_id_1", "node_id_2", ...]
-}}
-
-Analyze thoroughly. Include nodes that might have relevant information."""
+        # Verify tree structure is valid
+        tree_json_str = json.dumps(tree_without_text, indent=2)
+        logger.debug(f"Tree for search (first 500 chars): {tree_json_str[:500]}")
+        
+        # Load detailed prompt from registry
+        search_prompt = format_prompt_by_use_case(
+            "test.tree_search",
+            question=query,
+            tree_json=tree_json_str
+        )
+        
+        logger.debug(f"Search prompt (first 300 chars): {search_prompt[:300]}")
 
         try:
-            response = await ChatGPT_API_async(
+            response = await Ollama_API_async(
                 model=self.model,
                 prompt=search_prompt
             )
             
+            # Log raw response for debugging
+            if response:
+                logger.debug(f"Raw LLM response (first 300 chars): {response[:300]}")
+            
+            # Try to extract JSON from response (in case LLM added extra text)
+            response_to_parse = response.strip() if response else "{}"
+            
+            # If response contains JSON in markdown code block, extract it
+            if response_to_parse.startswith("```"):
+                try:
+                    json_start = response_to_parse.find('{')
+                    json_end = response_to_parse.rfind('}') + 1
+                    if json_start >= 0 and json_end > json_start:
+                        response_to_parse = response_to_parse[json_start:json_end]
+                except:
+                    pass
+            
+            # If still no {, try to find JSON object
+            if not response_to_parse.startswith('{'):
+                json_start = response_to_parse.find('{')
+                if json_start >= 0:
+                    json_end = response_to_parse.rfind('}') + 1
+                    if json_end > json_start:
+                        response_to_parse = response_to_parse[json_start:json_end]
+            
             # Parse JSON response
             try:
-                result = json.loads(response)
-                if 'node_list' not in result:
-                    result['node_list'] = []
+                result = json.loads(response_to_parse)
+                
+                # Handle both "node_ids" and "node_list" for backwards compatibility
+                if 'node_ids' not in result and 'node_list' in result:
+                    result['node_ids'] = result.pop('node_list')
+                
+                if 'node_ids' not in result:
+                    result['node_ids'] = []
                 if 'thinking' not in result:
                     result['thinking'] = "Unable to extract thinking process"
+                
+                logger.info(f"Successfully parsed tree search response with {len(result.get('node_ids', []))} nodes")
                 return result
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse tree search response: {response[:200]}")
+                logger.error(f"Failed to parse tree search response")
+                logger.error(f"Parsed content: {response_to_parse[:500]}")
+                logger.error(f"JSON decode error: {e}")
+                logger.error(f"Raw response: {response[:500] if response else 'Empty'}")
                 return {
                     "thinking": f"JSON parsing error: {str(e)}",
-                    "node_list": [],
+                    "node_ids": [],
                     "error": "json_parse_error"
                 }
         except Exception as e:
             logger.error(f"Tree search failed: {e}")
+            import sys
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            logger.error(f"Error details: {traceback.format_exc()}")
             return {
                 "thinking": f"Tree search error: {str(e)}",
-                "node_list": [],
+                "node_ids": [],
                 "error": str(e)
             }
     
     def _remove_text_from_tree(self, node: Any) -> Any:
-        """Recursively remove 'text' field from tree"""
+        """Recursively remove 'text' field from tree, handling both 'nodes' and 'children' keys"""
         if isinstance(node, dict):
             result = {}
             for key, value in node.items():
                 if key != 'text':
-                    if key == 'children' and isinstance(value, list):
+                    # Handle both 'nodes' and 'children' keys for nested structures
+                    if (key == 'children' or key == 'nodes') and isinstance(value, list):
                         result[key] = [self._remove_text_from_tree(child) for child in value]
                     else:
                         result[key] = value
@@ -187,15 +222,17 @@ Analyze thoroughly. Include nodes that might have relevant information."""
         return node
     
     def _create_node_map(self, tree: Any, node_map: Optional[Dict] = None) -> Dict:
-        """Create mapping from node_id to full node data"""
+        """Create mapping from node_id to full node data, handling both 'nodes' and 'children' keys"""
         if node_map is None:
             node_map = {}
         
         if isinstance(tree, dict):
             if 'node_id' in tree:
                 node_map[tree['node_id']] = tree
-            if 'children' in tree and isinstance(tree['children'], list):
-                for child in tree['children']:
+            # Handle both 'nodes' and 'children' keys for compatibility
+            child_key = 'nodes' if 'nodes' in tree else 'children'
+            if child_key in tree and isinstance(tree[child_key], list):
+                for child in tree[child_key]:
                     self._create_node_map(child, node_map)
         elif isinstance(tree, list):
             for item in tree:
@@ -218,6 +255,10 @@ Analyze thoroughly. Include nodes that might have relevant information."""
         Returns:
             Generated answer
         """
+        import sys
+        sys.path.insert(0, '/workspace/PageIndexOllama')
+        from pageindex.prompt_loader import format_prompt_by_use_case
+        
         logger.info(f"Generating answer based on {len(node_list)} nodes")
         
         # Summarize if text is too long
@@ -225,17 +266,15 @@ Analyze thoroughly. Include nodes that might have relevant information."""
         if len(relevant_text) > char_limit:
             relevant_text = relevant_text[:char_limit] + "...[truncated]"
         
-        answer_prompt = f"""Based on the provided context from the document, answer the following question concisely and accurately.
-
-Question: {query}
-
-Context (from document sections):
-{relevant_text}
-
-Provide a clear, well-structured answer based on the retrieved content. If information is insufficient, state that clearly."""
+        # Load answer generation prompt from registry
+        answer_prompt = format_prompt_by_use_case(
+            "test.answer_generation",
+            question=query,
+            context=relevant_text
+        )
 
         try:
-            answer = await ChatGPT_API_async(
+            answer = await Ollama_API_async(
                 model=self.model,
                 prompt=answer_prompt
             )
@@ -290,19 +329,43 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
                 
                 # Run in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
-                tree_structure = await loop.run_in_executor(
-                    None,
-                    self._run_page_index_sync,
-                    pdf_path,
-                    opt
-                )
+                try:
+                    result = await loop.run_in_executor(
+                        None,
+                        self._run_page_index_sync,
+                        pdf_path,
+                        opt
+                    )
+                except Exception as e:
+                    logger.error(f"Error in page_index_main execution: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    raise
                 step1_duration = time.time() - step1_start
                 
+                # page_index_main returns a dict with 'doc_name' and 'structure' keys
+                # Extract the actual tree structure
+                tree_structure = result.get('structure', result) if isinstance(result, dict) else result
+                
+                try:
+                    node_count = self._count_nodes(tree_structure)
+                except Exception as e:
+                    logger.error(f"Error counting nodes: {e}")
+                    logger.error(f"Tree structure type: {type(tree_structure)}")
+                    raise
+                    
+                try:
+                    tree_depth = self._get_tree_depth(tree_structure)
+                except Exception as e:
+                    logger.error(f"Error getting tree depth: {e}")
+                    logger.error(f"Tree structure type: {type(tree_structure)}")
+                    raise
+
                 test_result["steps"]["tree_generation"] = {
                     "status": "success",
                     "duration_seconds": step1_duration,
-                    "tree_node_count": self._count_nodes(tree_structure),
-                    "tree_depth": self._get_tree_depth(tree_structure),
+                    "tree_node_count": node_count,
+                    "tree_depth": tree_depth,
                     "tree_file": f"{self.reports_dir}/{pdf_name}_tree.json"
                 }
                 
@@ -317,9 +380,13 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
                 
             except Exception as e:
                 logger.error(f"✗ Tree generation failed: {e}")
+                import sys
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                logger.error(f"Error location: {exc_traceback.tb_frame.f_code.co_filename}:{exc_traceback.tb_lineno} in {exc_traceback.tb_frame.f_code.co_name}")
                 test_result["steps"]["tree_generation"] = {
                     "status": "failed",
                     "error": str(e),
+                    "error_location": f"{exc_traceback.tb_frame.f_code.co_filename}:{exc_traceback.tb_lineno}",
                     "traceback": traceback.format_exc()
                 }
                 return test_result
@@ -340,7 +407,8 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
             search_result = await self.run_tree_search(tree_structure, query)
             step3_duration = time.time() - step3_start
             
-            node_list = search_result.get('node_list', [])
+            # Support both node_ids and node_list for backwards compatibility
+            node_list = search_result.get('node_ids', search_result.get('node_list', []))
             test_result["steps"]["tree_search"] = {
                 "status": "success" if 'error' not in search_result else "failed",
                 "duration_seconds": step3_duration,
@@ -423,17 +491,23 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
             
         except Exception as e:
             logger.error(f"\n✗ E2E test failed with exception: {e}")
+            import sys
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            # Log detailed traceback
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             test_result["status"] = "failed"
             test_result["error"] = str(e)
             test_result["traceback"] = traceback.format_exc()
             return test_result
     
     def _count_nodes(self, tree: Any) -> int:
-        """Count total nodes in tree"""
+        """Count total nodes in tree, handling both 'nodes' and 'children' keys"""
         if isinstance(tree, dict):
             count = 1
-            if 'children' in tree and isinstance(tree['children'], list):
-                for child in tree['children']:
+            # Handle both 'nodes' and 'children' keys for compatibility
+            child_key = 'nodes' if 'nodes' in tree else 'children'
+            if child_key in tree and isinstance(tree[child_key], list):
+                for child in tree[child_key]:
                     count += self._count_nodes(child)
             return count
         elif isinstance(tree, list):
@@ -441,13 +515,21 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
         return 0
     
     def _get_tree_depth(self, tree: Any) -> int:
-        """Get maximum depth of tree"""
+        """Get maximum depth of tree, handling both 'nodes' and 'children' keys"""
         if isinstance(tree, dict):
-            if 'children' not in tree or not tree['children']:
+            # Handle both 'nodes' and 'children' keys for compatibility
+            child_key = 'nodes' if 'nodes' in tree else 'children'
+            if child_key not in tree or not tree[child_key]:
                 return 1
-            return 1 + max(self._get_tree_depth(child) for child in tree['children'])
+            try:
+                return 1 + max(self._get_tree_depth(child) for child in tree[child_key]) if tree[child_key] else 1
+            except (ValueError, TypeError):
+                return 1
         elif isinstance(tree, list) and tree:
-            return max(self._get_tree_depth(item) for item in tree)
+            try:
+                return max(self._get_tree_depth(item) for item in tree)
+            except ValueError:
+                return 0
         return 0
     
     async def run_all_tests(self) -> Dict[str, Any]:
@@ -639,13 +721,27 @@ Provide a clear, well-structured answer based on the retrieved content. If infor
 
 async def main():
     """Main entry point"""
-    pdf_dir = "/workspace/PageIndexOllama/tests/pdfs"
-    reports_dir = "/workspace/PageIndexOllama/tests/reports"
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run comprehensive E2E tests on PDFs')
+    parser.add_argument('--model', type=str, default='qwen2.5:14b', 
+                       help='Model to use (default: qwen2.5:14b)')
+    parser.add_argument('--pdf-dir', type=str, default='/workspace/PageIndexOllama/tests/pdfs',
+                       help='Directory containing test PDFs')
+    parser.add_argument('--reports-dir', type=str, default='/workspace/PageIndexOllama/tests/reports',
+                       help='Directory for output reports')
+    args = parser.parse_args()
+    
+    pdf_dir = args.pdf_dir
+    reports_dir = args.reports_dir
+    model = args.model
+    
+    logger.info(f"Using model: {model}")
     
     runner = E2ETestRunner(
         pdf_dir=pdf_dir,
         reports_dir=reports_dir,
-        model="mistral:7b"
+        model=model
     )
     
     # Run all tests

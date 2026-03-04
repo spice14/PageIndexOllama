@@ -10,7 +10,7 @@ if __name__ == "__main__":
     parser.add_argument('--pdf_path', type=str, help='Path to the PDF file')
     parser.add_argument('--md_path', type=str, help='Path to the Markdown file')
 
-    parser.add_argument('--model', type=str, default='mistral:7b', help='Model to use (provider-specific; default: mistral:7b; for Ollama use local model name, e.g., mistral:7b)')
+    parser.add_argument('--model', type=str, default='mistral24b-16k', help='Model to use (provider-specific; default: mistral24b-16k; for Ollama use local model name, e.g., mistral24b-16k, mistral:7b)')
 
     parser.add_argument('--toc-check-pages', type=int, default=20, 
                       help='Number of pages to check for table of contents (PDF only)')

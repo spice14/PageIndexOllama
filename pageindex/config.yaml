@@ -10,15 +10,17 @@ model: "gpt-4o-2024-11-20"  # OpenAI model (128K context window)
 
 # Ollama Model Configuration
 # Default local model for fully private inference (no external API required)
-ollama_model: "mistral:7b"  # Default local model (overridden by OLLAMA_MODEL env var)
+ollama_model: "mistral24b-16k"  # Default local model (overridden by OLLAMA_MODEL env var)
 
 # Alternative Ollama Models (can be set via OLLAMA_MODEL env var):
-# - mistral:7b        → 7B, more capable (default)
+# - mistral24b-16k    → 24B, 16k context window, production-tuned (default)
+# - mistral24b-prod   → 24B, constrained output profile (legacy)
+# - mistral-small:24b → 24B, 32k context (base)
+# - qwen2.5:14b       → 14B, 128k context window
+# - mistral:7b        → 7B, 8k context
 # - phi3:3.8b         → 3.8B, lightweight and fast
+# - llama3:8b         → 8B, 8k context
 # - gemma:2b          → 2B, fast but less capable
-# - gemma:3b          → 3B Google Gemma
-# - stablelm2:1.6b    → 1.6B, very fast
-# - llama3:8b         → 8B, highest quality
 
 # Model Capabilities
 model_config:
@@ -28,7 +30,7 @@ model_config:
     supports_streaming: true
   
   ollama:
-    context_window: 8192  # mistral:7b context window
+    context_window: 16384  # mistral24b-16k context window (16k)
     supports_json_mode: false  # Most Ollama models
     supports_streaming: true
 
